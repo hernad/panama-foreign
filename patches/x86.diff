@@ -1,0 +1,102 @@
+diff --git a/src/hotspot/cpu/x86/assembler_x86.cpp b/src/hotspot/cpu/x86/assembler_x86.cpp
+index c4d25dd3a1f..8db7fbf2856 100644
+--- a/src/hotspot/cpu/x86/assembler_x86.cpp
++++ b/src/hotspot/cpu/x86/assembler_x86.cpp
+@@ -7658,6 +7658,25 @@ void Assembler::set_byte_if_not_zero(Register dst) {
+   emit_int24(0x0F, (unsigned char)0x95, (0xE0 | dst->encoding()));
+ }
+ 
++void Assembler::fld_x(Address adr) {
++  InstructionMark im(this);
++  emit_int8((unsigned char)0xDB);
++  emit_operand32(rbp, adr);
++}
++
++void Assembler::fstp_x(Address adr) {
++  InstructionMark im(this);
++  emit_int8((unsigned char)0xDB);
++  emit_operand32(rdi, adr);
++}
++
++void Assembler::emit_operand32(Register reg, Address adr) {
++  assert(reg->encoding() < 8, "no extended registers");
++  assert(!adr.base_needs_rex() && !adr.index_needs_rex(), "no extended registers");
++  emit_operand(reg, adr._base, adr._index, adr._scale, adr._disp,
++               adr._rspec);
++}
++
+ #else // LP64
+ 
+ void Assembler::set_byte_if_not_zero(Register dst) {
+diff --git a/src/hotspot/cpu/x86/assembler_x86.hpp b/src/hotspot/cpu/x86/assembler_x86.hpp
+index 124b250ec4c..21f826ac50d 100644
+--- a/src/hotspot/cpu/x86/assembler_x86.hpp
++++ b/src/hotspot/cpu/x86/assembler_x86.hpp
+@@ -31,6 +31,12 @@
+ 
+ class BiasedLockingCounters;
+ 
++/*
++#ifndef _LP64
++#error "LP64?============================================
++#endif
++*/
++
+ // Contains all the definitions needed for x86 assembly code generation.
+ 
+ // Calling convention
+diff --git a/src/hotspot/cpu/x86/universalNativeInvoker_x86.cpp b/src/hotspot/cpu/x86/universalNativeInvoker_x86.cpp
+index c555647b824..9516324935b 100644
+--- a/src/hotspot/cpu/x86/universalNativeInvoker_x86.cpp
++++ b/src/hotspot/cpu/x86/universalNativeInvoker_x86.cpp
+@@ -79,7 +79,9 @@ void generate_invoke_native(MacroAssembler* _masm, const ABIDescriptor& abi, con
+     __ push(preserved_regs.at(i));
+   }
+ 
++#ifdef _LP64
+   __ movptr(ctxt_reg, c_rarg0); // FIXME c args? or java?
++#endif
+ 
+   __ block_comment("allocate_stack");
+   __ movptr(rcx, Address(ctxt_reg, (int) layout.stack_args_bytes));
+diff --git a/src/hotspot/cpu/x86/universalUpcallHandler_x86.cpp b/src/hotspot/cpu/x86/universalUpcallHandler_x86.cpp
+index 9426d5cdf61..0ce47cd274b 100644
+--- a/src/hotspot/cpu/x86/universalUpcallHandler_x86.cpp
++++ b/src/hotspot/cpu/x86/universalUpcallHandler_x86.cpp
+@@ -134,7 +134,12 @@ static address generate_upcall_stub(jobject rec, const ABIDescriptor& abi, const
+ 
+   __ subptr(rsp, (int) align_up(layout.buffer_size, buffer_alignment));
+ 
++#ifdef _LP64
+   Register used[] = { c_rarg0, c_rarg1, rax, rbx, rdi, rsi, r12, r13, r14, r15 };
++#else
++  Register used[] = { rax, rbx, rdi, rsi };
++#endif
++
+   GrowableArray<Register> preserved;
+   // TODO need to preserve anything killed by the upcall that is non-volatile, needs XMM regs as well, probably
+   for (size_t i = 0; i < sizeof(used)/sizeof(Register); i++) {
+@@ -182,8 +187,10 @@ static address generate_upcall_stub(jobject rec, const ABIDescriptor& abi, const
+ 
+   // Call upcall helper
+ 
++#ifdef _LP64
+   __ movptr(c_rarg0, rec_adr);
+   __ lea(c_rarg1, Address(rsp, buffer_offset));
++#endif
+ 
+ #ifdef _WIN64
+   __ block_comment("allocate shadow space for argument register spill");
+diff --git a/src/java.base/windows/native/libjava/jni_util_md.c b/src/java.base/windows/native/libjava/jni_util_md.c
+index e7174334300..92e1c55b4f8 100644
+--- a/src/java.base/windows/native/libjava/jni_util_md.c
++++ b/src/java.base/windows/native/libjava/jni_util_md.c
+@@ -60,7 +60,7 @@ void* findEntryInProcess(const char* name) {
+ 
+     // first come, first served
+     if(EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+-        for (int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
++        for (size_t i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+             HMODULE mod = hMods[i];
+             FARPROC proc = GetProcAddress(mod, name);
+             if(proc != NULL) {
