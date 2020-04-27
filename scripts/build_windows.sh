@@ -28,6 +28,8 @@ VENDOR+=" --with-version-feature=15"
 VENDOR+=" --with-version-update=0"
 VENDOR+=" --with-version-patch=3"
 
+GC_FEATURES=" --disable-jvm-feature-shenandoahgc"
+
 
 #C:\dev\java\x86>java -version
 #openjdk version "15-internal" 2020-09-15
@@ -79,7 +81,7 @@ chmod +x configure
 
 # cygwin make, java/
 export PATH=/usr/bin:$JAVA_PATH/bin:$PATH
-./configure $LLVM $BITNESS $VENDOR
+./configure $LLVM $BITNESS $VENDOR $GC_FEATURES
 
 make CONF=$CONF clean
 make CONF=$CONF
