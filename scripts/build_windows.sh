@@ -75,6 +75,7 @@ VENDOR+=" --with-version-patch=3"
 
 
 #rm -rf build
+chmod +x configure
 
 # cygwin make, java/
 export PATH=/usr/bin:$JAVA_PATH/bin:$PATH
