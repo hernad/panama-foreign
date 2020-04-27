@@ -16,7 +16,7 @@ echo "DEST=$DEST"
 [ -z $DEST ] && echo "DEST nije definisana" && exit 1
 
 
-[ ! -f $SRC ] && echo "SRC ne postoji, DEST java" && $DEST/bin/java -version && exit 1
+[ ! -d $SRC ] && echo "SRC ne postoji, DEST java" && $DEST/bin/java -version && exit 1
 
 
 rm -rf $DEST
