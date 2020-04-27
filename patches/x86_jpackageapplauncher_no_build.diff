@@ -1,0 +1,26 @@
+diff --git a/make/common/JavaCompilation.gmk b/make/common/JavaCompilation.gmk
+index 34ece1d46f0..4e8fa5c8d0c 100644
+--- a/make/common/JavaCompilation.gmk
++++ b/make/common/JavaCompilation.gmk
+@@ -471,7 +471,7 @@ define SetupJavaCompilationBody
+           $$($1_EXTRA_DEPS)
+ 		$$(call MakeDir, $$(@D))
+ 		$$(eval $$(call ListPathsSafely,$1_SRCS, $$@.tmp))
+-		$$(call LogWarn, Compiling $$(words $$($1_SRCS)) files for $1)
++		$$(call LogWarn, Compiling $$(words $$($1_SRCS)) java files for $1)
+ 		$$(call ExecuteWithLog, $$($1_BIN)$$($1_MODULE_SUBDIR)/_the.$$($1_SAFE_NAME)_batch, \
+ 		    $$($1_JVM) $$($1_JAVAC_CMD) $$($1_FLAGS) \
+ 		        -implicit:none \
+diff --git a/make/lib/Lib-jdk.incubator.jpackage.gmk b/make/lib/Lib-jdk.incubator.jpackage.gmk
+index 7ffef99afe4..abf8c8486dd 100644
+--- a/make/lib/Lib-jdk.incubator.jpackage.gmk
++++ b/make/lib/Lib-jdk.incubator.jpackage.gmk
+@@ -64,7 +64,7 @@ $(eval $(call SetupJdkExecutable, BUILD_JPACKAGE_APPLAUNCHEREXE, \
+ 
+ $(BUILD_JPACKAGE_APPLAUNCHEREXE): $(call FindLib, java.base, java)
+ 
+-TARGETS += $(BUILD_JPACKAGE_APPLAUNCHEREXE)
++#TARGETS += $(BUILD_JPACKAGE_APPLAUNCHEREXE)
+ 
+ ################################################################################
+ 

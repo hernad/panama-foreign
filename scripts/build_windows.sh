@@ -2,6 +2,8 @@
  
 # BUILD_ARCH=x86 scripts/build_windows.sh 
 
+DATE='2020-04-27'
+
 if [ "$BUILD_ARCH" == "x86" ] ; then
    BITNESS="--with-target-bits=32"
    #JAVA_PATH=/cygdrive/c/AdoptOpenJDK/x86/jdk-14.0.1.7-hotspot # jdk-8.0.252.09-hotspot
@@ -27,6 +29,8 @@ VENDOR+=" --with-version-build=1"
 VENDOR+=" --with-version-feature=15"
 VENDOR+=" --with-version-update=0"
 VENDOR+=" --with-version-patch=3"
+
+VENDOR+=" --with-version-date=$DATE"
 
 GC_FEATURES=" --disable-jvm-feature-shenandoahgc"
 
