@@ -22,11 +22,11 @@ VENDOR=" --with-vendor-name=Ziher"
 VENDOR+=" --with-vendor-url=https://github.com/hernad/panama-foreign"
 VENDOR+=" --with-version-pre=panama"
 VENDOR+=" --with-version-string=15"
-VENDOR+=" --with-version-build=49"
+VENDOR+=" --with-version-build=1"
 
 VENDOR+=" --with-version-feature=15"
 VENDOR+=" --with-version-update=0"
-VENDOR+=" --with-version-patch=2"
+VENDOR+=" --with-version-patch=3"
 
 
 #C:\dev\java\x86>java -version
