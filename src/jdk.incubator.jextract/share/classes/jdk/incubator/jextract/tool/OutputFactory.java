@@ -37,6 +37,7 @@ import javax.tools.JavaFileObject;
 import javax.tools.SimpleJavaFileObject;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.constant.ClassDesc;
 import java.lang.invoke.MethodType;
 import java.net.URI;
 import java.net.URL;
@@ -62,13 +63,13 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
     private final Set<Declaration.Variable> variables = new HashSet<>();
     private final Set<Declaration.Function> functions = new HashSet<>();
 
-    private final Set<String> structsAndVars = new HashSet<>();
-    private final Map<String, String> mangledNames = new HashMap<>();
-
-    protected final JavaSourceBuilder builder;
+    protected final HeaderBuilder builder;
+    protected final ConstantHelper constantHelper;
     protected final TypeTranslator typeTranslator = new TypeTranslator();
     private final String clsName;
     private final String pkgName;
+    private StructBuilder structBuilder;
+    private List<String> structSources = new ArrayList<>();
 
     // have we seen this Variable earlier?
     protected boolean variableSeen(Declaration.Variable tree) {
@@ -80,46 +81,20 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
         return !functions.add(tree);
     }
 
-    // have we visited a struct/union or a global variable of given name?
-    protected boolean structOrVariableSeen(String name) {
-        return !structsAndVars.add(name);
-    }
-
-    private void setMangledName(String name, String prefix) {
-        if (!name.isEmpty() && structOrVariableSeen(name)) {
-            mangledNames.put(name, prefix + name);
-        }
-    }
-
-    protected void setMangledName(Declaration.Scoped d) {
-        switch (d.kind()) {
-            case STRUCT:
-                setMangledName(d.name(), "struct$");
-                break;
-            case UNION:
-                setMangledName(d.name(), "union$");
-                break;
-        }
-    }
-
-    protected void setMangledName(Declaration.Variable v) {
-        setMangledName(v.name(), "var$");
-    }
-
-    protected String getMangledName(Declaration d) {
-        String name = d.name();
-        return name.isEmpty()? name : mangledNames.getOrDefault(name, name);
-    }
-
     static JavaFileObject[] generateWrapped(Declaration.Scoped decl, String clsName, String pkgName, List<String> libraryNames) {
-        return new OutputFactory(clsName, pkgName, libraryNames,
-                new JavaSourceBuilder(pkgName, libraryNames.toArray(String[]::new))).generate(decl);
+        String qualName = pkgName.isEmpty() ? clsName : pkgName + "." + clsName;
+        ConstantHelper constantHelper = new ConstantHelper(qualName,
+                ClassDesc.of(pkgName, "RuntimeHelper"), ClassDesc.of(pkgName, "Cstring"),
+                libraryNames.toArray(String[]::new));
+        return new OutputFactory(clsName, pkgName,
+                new HeaderBuilder(clsName, pkgName, constantHelper), constantHelper).generate(decl);
     }
 
-    public OutputFactory(String clsName, String pkgName, List<String> libraryNames, JavaSourceBuilder builder) {
+    public OutputFactory(String clsName, String pkgName, HeaderBuilder builder, ConstantHelper constantHelper) {
         this.clsName = clsName;
         this.pkgName = pkgName;
         this.builder = builder;
+        this.constantHelper = constantHelper;
     }
 
     private static String getCLangConstantsHolder() {
@@ -140,14 +115,17 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
     static final String C_LANG_CONSTANTS_HOLDER = getCLangConstantsHolder();
 
     public JavaFileObject[] generate(Declaration.Scoped decl) {
-        builder.classBegin(clsName);
+        builder.classBegin();
         //generate all decls
         decl.members().forEach(this::generateDecl);
-
+        for (String src : structSources) {
+            builder.addContent(src);
+        }
         builder.classEnd();
-        List<JavaFileObject> outputs = builder.build();
         try {
-            List<JavaFileObject> files = new ArrayList<>(outputs);
+            List<JavaFileObject> files = new ArrayList<>();
+            files.add(builder.build());
+            files.addAll(constantHelper.getClasses());
             files.add(fileFromString(pkgName,"RuntimeHelper", getRuntimeHelperSource()));
             files.add(getCstringFile(pkgName));
             files.addAll(getPrimitiveTypeFiles(pkgName));
@@ -240,33 +218,36 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
 
     @Override
     public Void visitScoped(Declaration.Scoped d, Declaration parent) {
-        if (d.kind() == Declaration.Scoped.Kind.TYPEDEF) {
-            return d.members().get(0).accept(this, d);
-        }
         if (d.layout().isEmpty()) {
             //skip decl-only
             return null;
         }
-        String name;
-        // FIXME: we need tree transformer. The mangling should be a separate tree transform phase
-        if (d.name().isEmpty() && parent != null) {
-            name = getMangledName(parent);
-        } else {
-            setMangledName(d);
-            name = getMangledName(d);
+        String name = d.name();
+        if (name.isEmpty() && parent != null) {
+            name = parent.name();
         }
 
+        boolean structClass = false;
         if (!d.name().isEmpty() || !isRecord(parent)) {
             //only add explicit struct layout if the struct is not to be flattened inside another struct
             switch (d.kind()) {
                 case STRUCT:
                 case UNION: {
-                    builder.addLayoutGetter(Utils.javaSafeIdentifier(name), d.layout().get());
+                    structClass = true;
+                    this.structBuilder = new StructBuilder("C" + name, pkgName, constantHelper);
+                    structBuilder.incrAlign();
+                    structBuilder.classBegin();
+                    structBuilder.addLayoutGetter("C" + name, d.layout().get());
                     break;
                 }
             }
         }
         d.members().forEach(fieldTree -> fieldTree.accept(this, d.name().isEmpty() ? parent : d));
+        if (structClass) {
+            this.structBuilder.classEnd();
+            structSources.add(structBuilder.getSource());
+            this.structBuilder = null;
+        }
         return null;
     }
 
@@ -300,9 +281,7 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
                 name = Utils.javaSafeIdentifier(name);
                 //generate functional interface
                 MethodType fitype = typeTranslator.getMethodType(f);
-                builder.addFunctionalInterface(name, fitype);
-                //generate helper
-                builder.addFunctionalFactory(name, fitype, Type.descriptorFor(f).orElseThrow());
+                builder.addFunctionalInterface(name, fitype, Type.descriptorFor(f).orElseThrow());
                 i++;
             }
         }
@@ -326,6 +305,20 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
     }
 
     @Override
+    public Void visitTypedef(Declaration.Typedef tree, Declaration parent) {
+        Type type = tree.type();
+        if (type instanceof Type.Declared) {
+            Declaration.Scoped s = ((Type.Declared) type).tree();
+            // only generate unnamed for now
+            // skip typedef with different name
+            if (s.name().isEmpty()) {
+                return visitScoped(s, tree);
+            }
+        }
+        return null;
+    }
+
+    @Override
     public Void visitVariable(Declaration.Variable tree, Declaration parent) {
         if (parent == null && variableSeen(tree)) {
             return null;
@@ -338,8 +331,7 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
 
         // FIXME: we need tree transformer. The mangling should be a separate tree transform phase
         if (parent == null) {
-            setMangledName(tree);
-            fieldName = getMangledName(tree);
+            fieldName = tree.name();
         }
         fieldName = Utils.javaSafeIdentifier(fieldName);
 
@@ -358,13 +350,10 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
 
         MemoryLayout treeLayout = tree.layout().orElseThrow();
         if (parent != null) { //struct field
-            Declaration.Scoped parentC = (Declaration.Scoped) parent;
-            String parentName = Utils.javaSafeIdentifier(getMangledName(parentC));
-            fieldName = parentName + "$" + fieldName;
-            MemoryLayout parentLayout = parentLayout(parentC);
-            builder.addVarHandleGetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
-            builder.addGetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
-            builder.addSetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
+            MemoryLayout parentLayout = parentLayout(parent);
+            structBuilder.addVarHandleGetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
+            structBuilder.addGetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
+            structBuilder.addSetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
         } else {
             builder.addLayoutGetter(fieldName, layout);
             builder.addVarHandleGetter(fieldName, tree.name(), treeLayout, clazz, null);
@@ -389,10 +378,15 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
         }
     }
 
-    protected static MemoryLayout parentLayout(Declaration.Scoped parent) {
+    protected static MemoryLayout parentLayout(Declaration parent) {
+        if (parent instanceof Declaration.Typedef) {
+            Declaration.Typedef alias = (Declaration.Typedef) parent;
+            return Type.layoutFor(alias.type()).orElseThrow();
+        } else if (parent instanceof Declaration.Scoped) {
+            return ((Declaration.Scoped) parent).layout().orElseThrow();
+        } else {
+            throw new IllegalArgumentException("Unexpected parent declaration");
+        }
         // case like `typedef struct { ... } Foo`
-        return (parent.kind() == Declaration.Scoped.Kind.TYPEDEF
-            ? (Declaration.Scoped) parent.members().get(0)
-            : parent).layout().orElseThrow();
     }
 }

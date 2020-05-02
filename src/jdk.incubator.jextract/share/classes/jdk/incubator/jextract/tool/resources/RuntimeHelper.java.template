@@ -29,7 +29,7 @@ public class RuntimeHelper {
             return new LibraryLookup[] { LibraryLookup.ofDefault() };
         } else {
             return Arrays.stream(libNames)
-                .map(libName -> LibraryLookup.ofLibrary(MH_LOOKUP, libName))
+                .map(libName -> LibraryLookup.ofLibrary(libName))
                 .toArray(LibraryLookup[]::new);
         }
     }
@@ -75,6 +75,10 @@ public class RuntimeHelper {
         } catch (Throwable ex) {
             throw new AssertionError(ex);
         }
+    }
+
+    public static void freeUpcallStub(MemoryAddress addr) {
+        ABI.freeUpcallStub(addr);
     }
 
     private static class VarargsInvoker {
