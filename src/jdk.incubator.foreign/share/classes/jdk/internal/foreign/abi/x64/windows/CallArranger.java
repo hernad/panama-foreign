@@ -26,10 +26,8 @@ import jdk.incubator.foreign.FunctionDescriptor;
 import jdk.incubator.foreign.GroupLayout;
 import jdk.incubator.foreign.MemoryAddress;
 import jdk.incubator.foreign.MemoryLayout;
-import jdk.incubator.foreign.MemoryLayouts;
 import jdk.incubator.foreign.MemorySegment;
 import jdk.incubator.foreign.SequenceLayout;
-import jdk.incubator.foreign.SystemABI;
 import jdk.incubator.foreign.ValueLayout;
 import jdk.internal.foreign.Utils;
 import jdk.internal.foreign.abi.CallingSequenceBuilder;
@@ -41,17 +39,16 @@ import jdk.internal.foreign.abi.ProgrammableInvoker;
 import jdk.internal.foreign.abi.ProgrammableUpcallHandler;
 import jdk.internal.foreign.abi.VMStorage;
 import jdk.internal.foreign.abi.x64.X86_64Architecture;
-import jdk.internal.foreign.abi.x64.ArgumentClassImpl;
 import jdk.internal.foreign.abi.SharedUtils;
-import jdk.internal.foreign.abi.x64.sysv.SysVx64ABI;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodType;
 import java.util.List;
 import java.util.Optional;
 
+import static jdk.incubator.foreign.CSupport.*;
+import static jdk.incubator.foreign.CSupport.Win64.VARARGS_ATTRIBUTE_NAME;
 import static jdk.internal.foreign.abi.x64.X86_64Architecture.*;
-import static jdk.internal.foreign.abi.x64.windows.Windowsx64ABI.VARARGS_ATTRIBUTE_NAME;
 
 /**
  * For the Windowx x64 C ABI specifically, this class uses the ProgrammableInvoker API, namely CallingSequenceBuilder2
@@ -86,7 +83,7 @@ public class CallArranger {
     }
 
     public static Bindings getBindings(MethodType mt, FunctionDescriptor cDesc, boolean forUpcall) {
-        SharedUtils.checkFunctionTypes(mt, cDesc);
+        SharedUtils.checkFunctionTypes(mt, cDesc, Windowsx64Linker.ADDRESS_SIZE);
 
         class CallingSequenceBuilderHelper {
             final CallingSequenceBuilder csb = new CallingSequenceBuilder(forUpcall);
@@ -108,7 +105,7 @@ public class CallArranger {
         boolean returnInMemory = isInMemoryReturn(cDesc.returnLayout());
         if (returnInMemory) {
             Class<?> carrier = MemoryAddress.class;
-            MemoryLayout layout = MemoryLayouts.WinABI.C_POINTER;
+            MemoryLayout layout = Win64.C_POINTER;
             csb.addArgumentBindings(carrier, layout);
             if (forUpcall) {
                 csb.setReturnBindings(carrier, layout);
@@ -163,7 +160,7 @@ public class CallArranger {
     }
 
     private static TypeClass classifyValueType(ValueLayout type) {
-        ArgumentClassImpl clazz = Windowsx64ABI.argumentClassFor(SystemABI.Type.fromLayout(type));
+        Win64.ArgumentClass clazz = Windowsx64Linker.argumentClassFor(type);
         if (clazz == null) {
             //padding not allowed here
             throw new IllegalStateException("Unexpected value layout: could not determine ABI class");
@@ -178,11 +175,11 @@ public class CallArranger {
         // but must be considered volatile across function calls."
         // https://docs.microsoft.com/en-us/cpp/build/x64-calling-convention?view=vs-2019
 
-        if (clazz == ArgumentClassImpl.INTEGER) {
+        if (clazz == Win64.ArgumentClass.INTEGER) {
             return TypeClass.INTEGER;
-        } else if(clazz == ArgumentClassImpl.POINTER) {
+        } else if(clazz == Win64.ArgumentClass.POINTER) {
             return TypeClass.POINTER;
-        } else if (clazz == ArgumentClassImpl.SSE) {
+        } else if (clazz == Win64.ArgumentClass.FLOAT) {
             if (type.attribute(VARARGS_ATTRIBUTE_NAME)
                     .map(String.class::cast)
                     .map(Boolean::parseBoolean).orElse(false)) {
@@ -231,7 +228,7 @@ public class CallArranger {
         }
 
         VMStorage nextStorage(int type, MemoryLayout layout) {
-            if (nRegs >= Windowsx64ABI.MAX_REGISTER_ARGUMENTS) {
+            if (nRegs >= Windowsx64Linker.MAX_REGISTER_ARGUMENTS) {
                 assert forArguments : "no stack returns";
                 // stack
                 long alignment = Math.max(SharedUtils.alignment(layout, true), STACK_SLOT_SIZE);

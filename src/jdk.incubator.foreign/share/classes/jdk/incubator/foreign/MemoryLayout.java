@@ -97,7 +97,7 @@ import java.util.stream.Stream;
  * Layout paths are typically expressed as a sequence of one or more {@link PathElement} instances.
  * <p>
  * Layout paths are for example useful in order to obtain offsets of arbitrarily nested layouts inside another layout
- * (see {@link MemoryLayout#offset(PathElement...)}), to quickly obtain a memory access handle corresponding to the selected
+ * (see {@link MemoryLayout#bitOffset(PathElement...)}), to quickly obtain a memory access handle corresponding to the selected
  * layout (see {@link MemoryLayout#varHandle(Class, PathElement...)}), to select an arbitrarily nested layout inside
  * another layout (see {@link MemoryLayout#select(PathElement...)}, or to transform a nested layout element inside
  * another layout (see {@link MemoryLayout#map(UnaryOperator, PathElement...)}).
@@ -112,9 +112,9 @@ SequenceLayout seq = MemoryLayout.ofSequence(5,
 ));
  * }</pre></blockquote>
  *
- * We can obtain the offset of the member layout named <code>value</code> from <code>seq</code>, as follows:
+ * We can obtain the offset, in bits, of the member layout named <code>value</code> from <code>seq</code>, as follows:
  * <blockquote><pre>{@code
-long valueOffset = seq.addOffset(PathElement.sequenceElement(), PathElement.groupElement("value"));
+long valueOffset = seq.bitOffset(PathElement.sequenceElement(), PathElement.groupElement("value"));
  * }</pre></blockquote>
  *
  * Similarly, we can select the member layout named {@code value}, as follows:
@@ -167,6 +167,13 @@ VarHandle valueHandle = seq.map(int.class, PathElement.sequenceElement(), PathEl
  * Since the layout path {@code seq} constructed in the above example features exactly one free dimension,
  * it follows that the memory access var handle {@code valueHandle} will feature an extra {@code long}
  * access coordinate.
+ *
+ * <h2>Layout attributes</h2>
+ *
+ * Layouts can be optionally associated with one or more <em>attributes</em>. A layout attribute forms a <em>name/value</em>
+ * pair, where the name is a {@link String} and the value is a {@link Constable}. The most common form of layout attribute
+ * is the <em>layout name</em> (see {@link #LAYOUT_NAME}), a custom name that can be associated to memory layouts and that can be referred to when
+ * constructing <a href="MemoryLayout.html#layout-paths"><em>layout paths</em></a>.
  *
  * @apiNote In the future, if the Java language permits, {@link MemoryLayout}
  * may become a {@code sealed} interface, which would prohibit subclassing except by
@@ -221,6 +228,11 @@ public interface MemoryLayout extends Constable {
 
     /**
      * Return the <em>name</em> (if any) associated with this layout.
+     * <p>
+     * This is equivalent to the following code:
+     * <blockquote><pre>{@code
+    attribute(LAYOUT_NAME).map(String.class::cast);
+     * }</pre></blockquote>
      *
      * @return the layout <em>name</em> (if any).
      * @see MemoryLayout#withName(String)
@@ -229,6 +241,11 @@ public interface MemoryLayout extends Constable {
 
     /**
      * Creates a new layout which features the desired layout <em>name</em>.
+     * <p>
+     * This is equivalent to the following code:
+     * <blockquote><pre>{@code
+    withAttribute(LAYOUT_NAME, name);
+     * }</pre></blockquote>
      *
      * @param name the layout name.
      * @return a new layout which is the same as this layout, except for the <em>name</em> associated to it.
@@ -286,26 +303,28 @@ public interface MemoryLayout extends Constable {
     MemoryLayout withBitAlignment(long bitAlignment);
 
     /**
-     * Returns the attribute with the given name if it exists, or an empty optional
+     * Returns the attribute with the given name (if it exists).
      *
-     * @param name the name of the attribute
-     * @return the optional attribute
+     * @param name the attribute name
+     * @return the attribute with the given name (if it exists).
      */
     Optional<Constable> attribute(String name);
 
     /**
-     * Returns a new MemoryLayout with the given additional attribute
+     * Returns a new memory layout which features the same attributes as this layout, plus the newly specified attribute.
+     * If this layout already contains an attribute with the same name, the existing attribute value is overwritten in the returned
+     * layout.
      *
-     * @param name the name of the attribute
-     * @param value the value of the attribute
-     * @return the new MemoryLayout
+     * @param name the attribute name.
+     * @param value the attribute value.
+     * @return a new memory layout which features the same attributes as this layout, plus the newly specified attribute.
      */
     MemoryLayout withAttribute(String name, Constable value);
 
     /**
-     * Returns a stream of the names of the attributes of this layout
+     * Returns a stream of the attribute names associated with this layout.
      *
-     * @return the stream of names
+     * @return a stream of the attribute names associated with this layout.
      */
     Stream<String> attributes();
 
@@ -323,8 +342,28 @@ public interface MemoryLayout extends Constable {
      * (see {@link PathElement#sequenceElement()} and {@link PathElement#sequenceElement(long, long)}).
      * @throws UnsupportedOperationException if one of the layouts traversed by the layout path has unspecified size.
      */
-    default long offset(PathElement... elements) {
+    default long bitOffset(PathElement... elements) {
         return computePathOp(LayoutPath.rootPath(this, MemoryLayout::bitSize), LayoutPath::offset, EnumSet.of(PathKind.SEQUENCE_ELEMENT, PathKind.SEQUENCE_RANGE), elements);
+    }
+
+    /**
+     * Computes the offset, in bytes, of the layout selected by a given layout path, where the path is considered rooted in this
+     * layout.
+     *
+     * @apiNote if the layout path has one (or more) free dimensions,
+     * the offset is computed as if all the indices corresponding to such dimensions were set to {@code 0}.
+     *
+     * @param elements the layout path elements.
+     * @return The offset, in bytes, of the layout selected by the layout path in {@code elements}.
+     * @throws IllegalArgumentException if the layout path does not select any layout nested in this layout, or if the
+     * layout path contains one or more path elements that select multiple sequence element indices
+     * (see {@link PathElement#sequenceElement()} and {@link PathElement#sequenceElement(long, long)}).
+     * @throws UnsupportedOperationException if one of the layouts traversed by the layout path has unspecified size,
+     * or if {@code bitOffset(elements)} is not a multiple of 8.
+     */
+    default long byteOffset(PathElement... elements) {
+        return Utils.bitsToBytesOrThrow(bitOffset(elements),
+                () -> new UnsupportedOperationException("Cannot compute byte offset; bit offset is not a multiple of 8"));
     }
 
     /**
@@ -393,7 +432,7 @@ public interface MemoryLayout extends Constable {
     }
 
     /**
-     * Is this a padding layout (e.g. a layout created from {@link #ofPaddingBits(long)} ?
+     * Is this a padding layout (e.g. a layout created from {@link #ofPaddingBits(long)}) ?
      * @return true, if this layout is a padding layout.
      */
     boolean isPadding();
@@ -596,4 +635,9 @@ E * (S + I * F)
     static GroupLayout ofUnion(MemoryLayout... elements) {
         return new GroupLayout(GroupLayout.Kind.UNION, List.of(elements));
     }
+
+    /**
+     * Attribute name used to specify the <em>name</em> property of a memory layout (see {@link #name()} and {@link #withName(String)}).
+     */
+    String LAYOUT_NAME = "layout/name";
 }

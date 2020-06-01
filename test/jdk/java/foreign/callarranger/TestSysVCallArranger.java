@@ -45,8 +45,7 @@ import org.testng.annotations.Test;
 
 import java.lang.invoke.MethodType;
 
-import static jdk.incubator.foreign.MemoryLayouts.SysV.*;
-import static jdk.incubator.foreign.MemoryLayouts.WinABI.C_POINTER;
+import static jdk.incubator.foreign.CSupport.SysV.*;
 import static jdk.internal.foreign.abi.Binding.*;
 import static jdk.internal.foreign.abi.x64.X86_64Architecture.*;
 import static org.testng.Assert.assertEquals;
@@ -68,6 +67,123 @@ public class TestSysVCallArranger extends CallArrangerTestBase {
 
         checkArgumentBindings(callingSequence, new Binding[][]{
             { move(rax, long.class) }
+        });
+
+        checkReturnBindings(callingSequence, new Binding[]{});
+
+        assertEquals(bindings.nVectorArgs, 0);
+    }
+
+    @Test
+    public void testNestedStructs() {
+        MemoryLayout POINT = MemoryLayout.ofStruct(
+                C_INT,
+                MemoryLayout.ofStruct(
+                        C_INT,
+                        C_INT
+                )
+        );
+        MethodType mt = MethodType.methodType(void.class, MemorySegment.class);
+        FunctionDescriptor fd = FunctionDescriptor.ofVoid(POINT);
+        CallArranger.Bindings bindings = CallArranger.getBindings(mt, fd, false);
+
+        assertFalse(bindings.isInMemoryReturn);
+        CallingSequence callingSequence = bindings.callingSequence;
+        assertEquals(callingSequence.methodType(), mt.appendParameterTypes(long.class));
+        assertEquals(callingSequence.functionDesc(), fd.appendArgumentLayouts(C_LONG));
+
+        checkArgumentBindings(callingSequence, new Binding[][]{
+                { dup(), dereference(0, long.class), move(rdi, long.class),
+                  dereference(8, int.class), move(rsi, int.class)},
+                { move(rax, long.class) },
+        });
+
+        checkReturnBindings(callingSequence, new Binding[]{});
+
+        assertEquals(bindings.nVectorArgs, 0);
+    }
+
+    @Test
+    public void testNestedUnion() {
+        MemoryLayout POINT = MemoryLayout.ofStruct(
+                C_INT,
+                MemoryLayout.ofPaddingBits(32),
+                MemoryLayout.ofUnion(
+                        MemoryLayout.ofStruct(C_INT, C_INT),
+                        C_LONG
+                )
+        );
+        MethodType mt = MethodType.methodType(void.class, MemorySegment.class);
+        FunctionDescriptor fd = FunctionDescriptor.ofVoid(POINT);
+        CallArranger.Bindings bindings = CallArranger.getBindings(mt, fd, false);
+
+        assertFalse(bindings.isInMemoryReturn);
+        CallingSequence callingSequence = bindings.callingSequence;
+        assertEquals(callingSequence.methodType(), mt.appendParameterTypes(long.class));
+        assertEquals(callingSequence.functionDesc(), fd.appendArgumentLayouts(C_LONG));
+
+        checkArgumentBindings(callingSequence, new Binding[][]{
+                { dup(), dereference(0, long.class), move(rdi, long.class),
+                        dereference(8, long.class), move(rsi, long.class)},
+                { move(rax, long.class) },
+        });
+
+        checkReturnBindings(callingSequence, new Binding[]{});
+
+        assertEquals(bindings.nVectorArgs, 0);
+    }
+
+    @Test
+    public void testNestedStructsUnaligned() {
+        MemoryLayout POINT = MemoryLayout.ofStruct(
+                C_INT,
+                MemoryLayout.ofStruct(
+                        C_LONG,
+                        C_INT
+                )
+        );
+        MethodType mt = MethodType.methodType(void.class, MemorySegment.class);
+        FunctionDescriptor fd = FunctionDescriptor.ofVoid(POINT);
+        CallArranger.Bindings bindings = CallArranger.getBindings(mt, fd, false);
+
+        assertFalse(bindings.isInMemoryReturn);
+        CallingSequence callingSequence = bindings.callingSequence;
+        assertEquals(callingSequence.methodType(), mt.appendParameterTypes(long.class));
+        assertEquals(callingSequence.functionDesc(), fd.appendArgumentLayouts(C_LONG));
+
+        checkArgumentBindings(callingSequence, new Binding[][]{
+                { dup(), dereference(0, long.class), move(stackStorage(0), long.class),
+                        dereference(8, long.class), move(stackStorage(1), long.class)},
+                { move(rax, long.class) },
+        });
+
+        checkReturnBindings(callingSequence, new Binding[]{});
+
+        assertEquals(bindings.nVectorArgs, 0);
+    }
+
+    @Test
+    public void testNestedUnionUnaligned() {
+        MemoryLayout POINT = MemoryLayout.ofStruct(
+                C_INT,
+                MemoryLayout.ofUnion(
+                        MemoryLayout.ofStruct(C_INT, C_INT),
+                        C_LONG
+                )
+        );
+        MethodType mt = MethodType.methodType(void.class, MemorySegment.class);
+        FunctionDescriptor fd = FunctionDescriptor.ofVoid(POINT);
+        CallArranger.Bindings bindings = CallArranger.getBindings(mt, fd, false);
+
+        assertFalse(bindings.isInMemoryReturn);
+        CallingSequence callingSequence = bindings.callingSequence;
+        assertEquals(callingSequence.methodType(), mt.appendParameterTypes(long.class));
+        assertEquals(callingSequence.functionDesc(), fd.appendArgumentLayouts(C_LONG));
+
+        checkArgumentBindings(callingSequence, new Binding[][]{
+                { dup(), dereference(0, long.class), move(stackStorage(0), long.class),
+                        dereference(8, int.class), move(stackStorage(1), int.class)},
+                { move(rax, long.class) },
         });
 
         checkReturnBindings(callingSequence, new Binding[]{});
@@ -285,17 +401,17 @@ public class TestSysVCallArranger extends CallArrangerTestBase {
     @DataProvider
     public static Object[][] structs() {
         return new Object[][]{
-            { MemoryLayout.ofStruct(C_ULONG), new Binding[]{
+            { MemoryLayout.ofStruct(C_LONG), new Binding[]{
                     dereference(0, long.class), move(rdi, long.class)
                 }
             },
-            { MemoryLayout.ofStruct(C_ULONG, C_ULONG), new Binding[]{
+            { MemoryLayout.ofStruct(C_LONG, C_LONG), new Binding[]{
                     dup(),
                     dereference(0, long.class), move(rdi, long.class),
                     dereference(8, long.class), move(rsi, long.class)
                 }
             },
-            { MemoryLayout.ofStruct(C_ULONG, C_ULONG, C_ULONG), new Binding[]{
+            { MemoryLayout.ofStruct(C_LONG, C_LONG, C_LONG), new Binding[]{
                     dup(),
                     dereference(0, long.class), move(stackStorage(0), long.class),
                     dup(),
@@ -303,7 +419,7 @@ public class TestSysVCallArranger extends CallArrangerTestBase {
                     dereference(16, long.class), move(stackStorage(2), long.class)
                 }
             },
-            { MemoryLayout.ofStruct(C_ULONG, C_ULONG, C_ULONG, C_ULONG), new Binding[]{
+            { MemoryLayout.ofStruct(C_LONG, C_LONG, C_LONG, C_LONG), new Binding[]{
                     dup(),
                     dereference(0, long.class), move(stackStorage(0), long.class),
                     dup(),
@@ -318,7 +434,7 @@ public class TestSysVCallArranger extends CallArrangerTestBase {
 
     @Test
     public void testReturnRegisterStruct() {
-        MemoryLayout struct = MemoryLayout.ofStruct(C_ULONG, C_ULONG);
+        MemoryLayout struct = MemoryLayout.ofStruct(C_LONG, C_LONG);
 
         MethodType mt = MethodType.methodType(MemorySegment.class);
         FunctionDescriptor fd = FunctionDescriptor.of(struct);
@@ -348,7 +464,7 @@ public class TestSysVCallArranger extends CallArrangerTestBase {
 
     @Test
     public void testIMR() {
-        MemoryLayout struct = MemoryLayout.ofStruct(C_ULONG, C_ULONG, C_ULONG);
+        MemoryLayout struct = MemoryLayout.ofStruct(C_LONG, C_LONG, C_LONG);
 
         MethodType mt = MethodType.methodType(MemorySegment.class);
         FunctionDescriptor fd = FunctionDescriptor.of(struct);

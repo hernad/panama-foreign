@@ -26,6 +26,7 @@
 
 package jdk.incubator.jextract;
 
+import jdk.incubator.foreign.CSupport;
 import jdk.incubator.foreign.FunctionDescriptor;
 import jdk.incubator.foreign.MemoryLayout;
 import jdk.internal.jextract.impl.LayoutUtils;
@@ -90,67 +91,87 @@ public interface Type {
             /**
              * {@code void} type.
              */
-            Void,
+            Void("void", null),
             /**
              * {@code Bool} type.
              */
-            Bool,
+            Bool("_Bool", CSupport.C_BOOL),
             /**
              * {@code char} type.
              */
-            Char,
+            Char("char", CSupport.C_CHAR),
             /**
              * {@code char16} type.
              */
-            Char16,
+            Char16("char16", null),
             /**
              * {@code char32} type.
              */
-            Char32,
+            Char32("char32", null),
             /**
              * {@code short} type.
              */
-            Short,
+            Short("short", CSupport.C_SHORT),
             /**
              * {@code int} type.
              */
-            Int,
+            Int("int", CSupport.C_INT),
             /**
              * {@code long} type.
              */
-            Long,
+            Long("long", CSupport.C_LONG),
             /**
              * {@code long long} type.
              */
-            LongLong,
+            LongLong("long long", CSupport.C_LONGLONG),
             /**
              * {@code int128} type.
              */
-            Int128,
+            Int128("__int128", null),
             /**
              * {@code float} type.
              */
-            Float,
+            Float("float", CSupport.C_FLOAT),
             /**
              * {@code double} type.
              */
-            Double,
+            Double("double",CSupport.C_DOUBLE),
             /**
              * {@code long double} type.
              */
-            LongDouble,
+            LongDouble("long double", CSupport.C_LONGDOUBLE),
             /**
              * {@code float128} type.
              */
-            Float128,
+            Float128("float128", null),
             /**
              * {@code float16} type.
              */
-            HalfFloat,
+            HalfFloat("__fp16", null),
             /**
              * {@code wchar} type.
              */
-            WChar
+            WChar("wchar_t", null);
+
+            private final String typeName;
+            private final MemoryLayout layout;
+
+            Kind(String typeName, MemoryLayout layout) {
+                this.typeName = typeName;
+                this.layout = layout;
+            }
+
+            public String typeName() {
+                return typeName;
+            }
+
+            /**
+             * The primitive type (optional) layout.
+             * @return The primitive type (optional) layout.
+             */
+            public Optional<MemoryLayout> layout() {
+                return Optional.ofNullable(layout);
+            }
         }
 
         /**
@@ -158,12 +179,6 @@ public interface Type {
          * @return The primitive type kind.
          */
         Kind kind();
-
-        /**
-         * The primitive type (optional) layout.
-         * @return The primitive type (optional) layout.
-         */
-        Optional<MemoryLayout> layout();
     }
 
     /**
@@ -389,13 +404,12 @@ public interface Type {
     }
 
     /**
-     * Creates a new primitive type given kind and layout.
+     * Creates a new primitive type given kind.
      * @param kind the primitive type kind.
-     * @param layout the primitive type layout.
-     * @return a new primitive type with given kind and layout.
+     * @return a new primitive type with given kind.
      */
-    static Type.Primitive primitive(Type.Primitive.Kind kind, MemoryLayout layout) {
-        return new TypeImpl.PrimitiveImpl(kind, layout);
+    static Type.Primitive primitive(Type.Primitive.Kind kind) {
+        return new TypeImpl.PrimitiveImpl(kind);
     }
 
     /**

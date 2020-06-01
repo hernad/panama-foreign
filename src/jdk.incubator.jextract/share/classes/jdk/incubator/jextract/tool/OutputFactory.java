@@ -24,13 +24,10 @@
  */
 package jdk.incubator.jextract.tool;
 
+import jdk.incubator.foreign.*;
 import jdk.incubator.jextract.Declaration;
 import jdk.incubator.jextract.Type;
-import jdk.incubator.foreign.FunctionDescriptor;
-import jdk.incubator.foreign.MemoryAddress;
-import jdk.incubator.foreign.MemoryLayout;
-import jdk.incubator.foreign.MemorySegment;
-import jdk.incubator.foreign.SystemABI;
+import jdk.incubator.jextract.Type.Primitive;
 import jdk.internal.foreign.abi.SharedUtils;
 
 import javax.tools.JavaFileObject;
@@ -69,7 +66,31 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
     private final String clsName;
     private final String pkgName;
     private StructBuilder structBuilder;
+    private Map<Declaration, String> structClassNames = new HashMap<>();
     private List<String> structSources = new ArrayList<>();
+    private Set<String> nestedClassNames = new HashSet<>();
+    private Set<Declaration.Typedef> unresolvedStructTypedefs = new HashSet<>();
+    private int nestedClassNameCount = 0;
+    /*
+     * We may have case-insensitive name collision! A C program may have
+     * defined structs/unions/typedefs with the names FooS, fooS, FoOs, fOOs.
+     * Because we map structs/unions/typedefs to nested classes of header classes,
+     * such a case-insensitive name collision is problematic. This is because in
+     * a case-insensitive file system javac will overwrite classes for
+     * Header$CFooS, Header$CfooS, Header$CFoOs and so on! We solve this by
+     * generating unique case-insensitive names for nested classes.
+     */
+    private String uniqueNestedClassName(String name) {
+        return nestedClassNames.add(name.toLowerCase())? name : (name + "$" + nestedClassNameCount++);
+    }
+
+    private String structClassName(Declaration decl) {
+        return structClassNames.computeIfAbsent(decl, d -> uniqueNestedClassName("C" + d.name()));
+    }
+
+    private boolean structDefinitionSeen(Declaration decl) {
+        return structClassNames.containsKey(decl);
+    }
 
     // have we seen this Variable earlier?
     protected boolean variableSeen(Declaration.Variable tree) {
@@ -98,15 +119,15 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
     }
 
     private static String getCLangConstantsHolder() {
-        String prefix = "jdk.incubator.foreign.MemoryLayouts.";
-        String abi = SharedUtils.getSystemABI().name();
+        String prefix = "jdk.incubator.foreign.CSupport.";
+        String abi = SharedUtils.getSystemLinker().name();
         switch (abi) {
-            case SystemABI.ABI_SYSV:
+            case CSupport.SysV.NAME:
                 return prefix + "SysV";
-            case SystemABI.ABI_WINDOWS:
-                return prefix + "WinABI";
-            case SystemABI.ABI_AARCH64:
-                return prefix + "AArch64ABI";
+            case CSupport.Win64.NAME:
+                return prefix + "Win64";
+            case CSupport.AArch64.NAME:
+                return prefix + "AArch64";
             default:
                 throw new UnsupportedOperationException("Unsupported ABI: " + abi);
         }
@@ -120,6 +141,13 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
         decl.members().forEach(this::generateDecl);
         for (String src : structSources) {
             builder.addContent(src);
+        }
+        // check if unresolved typedefs can be resolved now!
+        for (Declaration.Typedef td : unresolvedStructTypedefs) {
+            Declaration.Scoped structDef = ((Type.Declared)td.type()).tree();
+            if (structDefinitionSeen(structDef)) {
+                builder.emitTypedef(uniqueNestedClassName("C" + td.name()), structClassName(structDef));
+            }
         }
         builder.classEnd();
         try {
@@ -162,20 +190,16 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
     }
 
     private List<JavaFileObject> getPrimitiveTypeFiles(String pkgName) throws IOException, URISyntaxException {
-        var abi = SharedUtils.getSystemABI();
+        var abi = SharedUtils.getSystemLinker();
         var cXJavaFile = OutputFactory.class.getResource("resources/C-X.java.template");
         var lines = Files.readAllLines(Paths.get(cXJavaFile.toURI()));
 
         List<JavaFileObject> files = new ArrayList<>();
         String pkgPrefix = pkgName.isEmpty()? "" : "package " + pkgName + ";\n";
-        for (SystemABI.Type type : SystemABI.Type.values()) {
-            // FIXME: ignore pointer and complex type
-            if (type == SystemABI.Type.POINTER || type == SystemABI.Type.COMPLEX_LONG_DOUBLE) {
-                continue;
-            }
-
-            String typeName = type.name().toLowerCase();
-            MemoryLayout layout = abi.layoutFor(type).get();
+        for (Primitive.Kind type : Primitive.Kind.values()) {
+            if (type.layout().isEmpty()) continue;
+            String typeName = type.typeName().toLowerCase().replace(' ', '_');
+            MemoryLayout layout = type.layout().get();
             String contents =  pkgPrefix +
                     lines.stream().collect(Collectors.joining("\n")).
                             replace("-X", typeName).
@@ -187,9 +211,9 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
         return files;
     }
 
-    private static Class<?> classForType(SystemABI.Type type, MemoryLayout layout) {
+    private static Class<?> classForType(Primitive.Kind type, MemoryLayout layout) {
         boolean isFloat = switch(type) {
-            case FLOAT, DOUBLE, LONG_DOUBLE -> true;
+            case Float, Double, LongDouble -> true;
             default-> false;
         };
         return TypeTranslator.layoutToClass(isFloat, layout);
@@ -222,22 +246,19 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
             //skip decl-only
             return null;
         }
-        String name = d.name();
-        if (name.isEmpty() && parent != null) {
-            name = parent.name();
-        }
-
         boolean structClass = false;
+        StructBuilder oldStructBuilder = this.structBuilder;
         if (!d.name().isEmpty() || !isRecord(parent)) {
             //only add explicit struct layout if the struct is not to be flattened inside another struct
             switch (d.kind()) {
                 case STRUCT:
                 case UNION: {
                     structClass = true;
-                    this.structBuilder = new StructBuilder("C" + name, pkgName, constantHelper);
+                    String className = structClassName(d.name().isEmpty() ? parent : d);
+                    this.structBuilder = new StructBuilder(className, pkgName, constantHelper);
                     structBuilder.incrAlign();
                     structBuilder.classBegin();
-                    structBuilder.addLayoutGetter("C" + name, d.layout().get());
+                    structBuilder.addLayoutGetter(className, d.layout().get());
                     break;
                 }
             }
@@ -246,7 +267,7 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
         if (structClass) {
             this.structBuilder.classEnd();
             structSources.add(structBuilder.getSource());
-            this.structBuilder = null;
+            this.structBuilder = oldStructBuilder;
         }
         return null;
     }
@@ -309,11 +330,42 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
         Type type = tree.type();
         if (type instanceof Type.Declared) {
             Declaration.Scoped s = ((Type.Declared) type).tree();
-            // only generate unnamed for now
-            // skip typedef with different name
-            if (s.name().isEmpty()) {
-                return visitScoped(s, tree);
+            if (!s.name().equals(tree.name())) {
+                switch (s.kind()) {
+                    case STRUCT:
+                    case UNION: {
+                        if (s.name().isEmpty()) {
+                            visitScoped(s, tree);
+                        } else {
+                            /*
+                             * If typedef is seen after the struct/union definition, we can generate subclass
+                             * right away. If not, we've to save it and revisit after all the declarations are
+                             * seen. This is to support forward declaration of typedefs.
+                             *
+                             * typedef struct Foo Bar;
+                             *
+                             * struct Foo {
+                             *     int x, y;
+                             * };
+                             */
+                            if (structDefinitionSeen(s)) {
+                                builder.emitTypedef(uniqueNestedClassName("C" + tree.name()), structClassName(s));
+                            } else {
+                                /*
+                                 * Definition of typedef'ed struct/union not seen yet. May be the definition comes later.
+                                 * Save it to visit at the end of all declarations.
+                                 */
+                                unresolvedStructTypedefs.add(tree);
+                            }
+                        }
+                    }
+                    break;
+                    default:
+                        visitScoped(s, tree);
+                }
             }
+        } else if (type instanceof Type.Primitive) {
+             builder.emitPrimitiveTypedef((Type.Primitive)type, uniqueNestedClassName("C" + tree.name()));
         }
         return null;
     }
@@ -328,11 +380,6 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
         String symbol = tree.name();
         assert !symbol.isEmpty();
         assert !fieldName.isEmpty();
-
-        // FIXME: we need tree transformer. The mangling should be a separate tree transform phase
-        if (parent == null) {
-            fieldName = tree.name();
-        }
         fieldName = Utils.javaSafeIdentifier(fieldName);
 
         Type type = tree.type();
@@ -343,23 +390,32 @@ public class OutputFactory implements Declaration.Visitor<Void, Declaration> {
         }
         Class<?> clazz = typeTranslator.getJavaType(type);
         if (tree.kind() == Declaration.Variable.Kind.BITFIELD || clazz == MemoryAddress.class ||
-                clazz == MemorySegment.class || layout.byteSize() > 8) {
+                (layout instanceof ValueLayout && layout.byteSize() > 8)) {
             //skip
             return null;
         }
 
+        boolean isSegment = clazz == MemorySegment.class;
         MemoryLayout treeLayout = tree.layout().orElseThrow();
         if (parent != null) { //struct field
             MemoryLayout parentLayout = parentLayout(parent);
-            structBuilder.addVarHandleGetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
-            structBuilder.addGetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
-            structBuilder.addSetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
+            if (isSegment) {
+                structBuilder.addAddressGetter(fieldName, tree.name(), treeLayout, parentLayout);
+            } else {
+                structBuilder.addVarHandleGetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
+                structBuilder.addGetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
+                structBuilder.addSetter(fieldName, tree.name(), treeLayout, clazz, parentLayout);
+            }
         } else {
-            builder.addLayoutGetter(fieldName, layout);
-            builder.addVarHandleGetter(fieldName, tree.name(), treeLayout, clazz, null);
-            builder.addAddressGetter(fieldName, tree.name());
-            builder.addGetter(fieldName, tree.name(), treeLayout, clazz, null);
-            builder.addSetter(fieldName, tree.name(), treeLayout, clazz, null);
+            if (isSegment) {
+                builder.addAddressGetter(fieldName, tree.name(), treeLayout, null);
+            } else {
+                builder.addLayoutGetter(fieldName, layout);
+                builder.addVarHandleGetter(fieldName, tree.name(), treeLayout, clazz,null);
+                builder.addAddressGetter(fieldName, tree.name(), treeLayout, null);
+                builder.addGetter(fieldName, tree.name(), treeLayout, clazz, null);
+                builder.addSetter(fieldName, tree.name(), treeLayout, clazz, null);
+            }
         }
 
         return null;

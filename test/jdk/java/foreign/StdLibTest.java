@@ -51,6 +51,8 @@ import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
+import jdk.incubator.foreign.CSupport;
+import jdk.incubator.foreign.ForeignLinker;
 import jdk.incubator.foreign.FunctionDescriptor;
 import jdk.incubator.foreign.LibraryLookup;
 import jdk.incubator.foreign.MemoryAddress;
@@ -58,16 +60,15 @@ import jdk.incubator.foreign.MemoryHandles;
 import jdk.incubator.foreign.MemoryLayout;
 import jdk.incubator.foreign.MemorySegment;
 import jdk.incubator.foreign.SequenceLayout;
-import jdk.incubator.foreign.SystemABI;
 import org.testng.annotations.*;
 
-import static jdk.incubator.foreign.MemoryLayouts.*;
+import static jdk.incubator.foreign.CSupport.*;
 import static org.testng.Assert.*;
 
 @Test
 public class StdLibTest extends NativeTestHelper {
 
-    final static SystemABI abi = SystemABI.getSystemABI();
+    final static ForeignLinker abi = CSupport.getSystemLinker();
 
     final static VarHandle byteHandle = MemoryHandles.varHandle(byte.class, ByteOrder.nativeOrder());
     final static VarHandle intHandle = MemoryHandles.varHandle(int.class, ByteOrder.nativeOrder());
@@ -200,7 +201,7 @@ public class StdLibTest extends NativeTestHelper {
 
                 qsort = abi.downcallHandle(lookup.lookup("qsort"),
                         MethodType.methodType(void.class, MemoryAddress.class, long.class, long.class, MemoryAddress.class),
-                        FunctionDescriptor.ofVoid(C_POINTER, C_ULONG, C_ULONG, C_POINTER));
+                        FunctionDescriptor.ofVoid(C_POINTER, C_LONGLONG, C_LONGLONG, C_POINTER));
 
                 //qsort upcall handle
                 qsortCompar = MethodHandles.lookup().findStatic(StdLibTest.StdLibHelper.class, "qsortCompare",
@@ -308,9 +309,9 @@ public class StdLibTest extends NativeTestHelper {
                         .forEach(i -> intArrHandle.set(nativeArr.baseAddress(), i, arr[i]));
 
                 //call qsort
-                MemoryAddress qsortUpcallAddr = abi.upcallStub(qsortCompar.bindTo(nativeArr), qsortComparFunction);
-                qsort.invokeExact(nativeArr.baseAddress(), seq.elementCount().getAsLong(), C_INT.byteSize(), qsortUpcallAddr);
-                abi.freeUpcallStub(qsortUpcallAddr);
+                try (MemorySegment qsortUpcallStub = abi.upcallStub(qsortCompar.bindTo(nativeArr), qsortComparFunction)) {
+                    qsort.invokeExact(nativeArr.baseAddress(), seq.elementCount().getAsLong(), C_INT.byteSize(), qsortUpcallStub.baseAddress());
+                }
 
                 //convert back to Java array
                 return LongStream.range(0, arr.length)
@@ -404,7 +405,7 @@ public class StdLibTest extends NativeTestHelper {
     enum PrintfArg {
         INTEGRAL(int.class, asVarArg(C_INT), "%d", 42, 42),
         STRING(MemoryAddress.class, asVarArg(C_POINTER), "%s", toCString("str").baseAddress(), "str"),
-        CHAR(char.class, asVarArg(C_CHAR), "%c", 'h', 'h'),
+        CHAR(byte.class, asVarArg(C_CHAR), "%c", (byte) 'h', 'h'),
         DOUBLE(double.class, asVarArg(C_DOUBLE), "%.4f", 1.2345d, 1.2345d);
 
         final Class<?> carrier;
