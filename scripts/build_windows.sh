@@ -2,7 +2,7 @@
  
 # BUILD_ARCH=x86 scripts/build_windows.sh 
 
-DATE='2020-04-27'
+DATE='2020-05-02'
 
 if [ "$BUILD_ARCH" == "x86" ] ; then
    BITNESS="--with-target-bits=32"
@@ -24,11 +24,11 @@ VENDOR=" --with-vendor-name=Ziher"
 VENDOR+=" --with-vendor-url=https://github.com/hernad/panama-foreign"
 VENDOR+=" --with-version-pre=panama"
 VENDOR+=" --with-version-string=15"
-VENDOR+=" --with-version-build=1"
+VENDOR+=" --with-version-build=2"
 
 VENDOR+=" --with-version-feature=15"
 VENDOR+=" --with-version-update=0"
-VENDOR+=" --with-version-patch=3"
+VENDOR+=" --with-version-patch=5"
 
 VENDOR+=" --with-version-date=$DATE"
 
