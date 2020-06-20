@@ -2,7 +2,7 @@
  
 # BUILD_ARCH=x86 scripts/build_windows.sh 
 
-DATE='2020-05-02'
+DATE='2020-06-01'
 
 if [ "$BUILD_ARCH" == "x86" ] ; then
    BITNESS="--with-target-bits=32"
@@ -28,7 +28,7 @@ VENDOR+=" --with-version-build=2"
 
 VENDOR+=" --with-version-feature=15"
 VENDOR+=" --with-version-update=0"
-VENDOR+=" --with-version-patch=5"
+VENDOR+=" --with-version-patch=6"
 
 VENDOR+=" --with-version-date=$DATE"
 
