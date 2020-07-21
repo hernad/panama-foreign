@@ -28,16 +28,18 @@ import jdk.incubator.foreign.CSupport;
 import jdk.incubator.foreign.ForeignLinker;
 import jdk.incubator.foreign.FunctionDescriptor;
 import jdk.incubator.foreign.GroupLayout;
+import jdk.incubator.foreign.MemoryAccess;
 import jdk.incubator.foreign.MemoryAddress;
 import jdk.incubator.foreign.MemoryHandles;
 import jdk.incubator.foreign.MemoryLayout;
 import jdk.incubator.foreign.MemorySegment;
+import jdk.incubator.foreign.NativeScope;
 import jdk.incubator.foreign.SequenceLayout;
 import jdk.incubator.foreign.ValueLayout;
 import jdk.internal.foreign.MemoryAddressImpl;
+import jdk.internal.foreign.NativeMemorySegmentImpl;
 import jdk.internal.foreign.Utils;
 import jdk.internal.foreign.abi.aarch64.AArch64Linker;
-import jdk.internal.foreign.abi.x64.sysv.SysVVaList;
 import jdk.internal.foreign.abi.x64.sysv.SysVx64Linker;
 import jdk.internal.foreign.abi.x64.windows.Windowsx64Linker;
 
@@ -45,6 +47,8 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.invoke.VarHandle;
+import java.nio.ByteOrder;
+import java.nio.charset.Charset;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
@@ -61,6 +65,14 @@ public class SharedUtils {
     private static final MethodHandle MH_ALLOC_BUFFER;
     private static final MethodHandle MH_BASEADDRESS;
     private static final MethodHandle MH_BUFFER_COPY;
+
+    private static final VarHandle VH_BYTE = MemoryHandles.varHandle(byte.class, ByteOrder.nativeOrder());
+    private static final VarHandle VH_CHAR = MemoryHandles.varHandle(char.class, ByteOrder.nativeOrder());
+    private static final VarHandle VH_SHORT = MemoryHandles.varHandle(short.class, ByteOrder.nativeOrder());
+    private static final VarHandle VH_INT = MemoryHandles.varHandle(int.class, ByteOrder.nativeOrder());
+    private static final VarHandle VH_LONG = MemoryHandles.varHandle(long.class, ByteOrder.nativeOrder());
+    private static final VarHandle VH_FLOAT = MemoryHandles.varHandle(float.class, ByteOrder.nativeOrder());
+    private static final VarHandle VH_DOUBLE = MemoryHandles.varHandle(double.class, ByteOrder.nativeOrder());
 
     static {
         try {
@@ -248,12 +260,32 @@ public class SharedUtils {
         throw new UnsupportedOperationException("Unsupported os or arch: " + os + ", " + arch);
     }
 
-    public static VaList newVaList(Consumer<VaList.Builder> actions) {
+    public static String toJavaStringInternal(MemoryAddress addr, Charset charset) {
+        int len = strlen(addr);
+        byte[] bytes = new byte[len];
+        MemorySegment.ofArray(bytes)
+                .copyFrom(NativeMemorySegmentImpl.makeNativeSegmentUnchecked(addr, len, null, null, null));
+        return new String(bytes, charset);
+    }
+
+    private static int strlen(MemoryAddress address) {
+        // iterate until overflow (String can only hold a byte[], whose length can be expressed as an int)
+        for (int offset = 0; offset >= 0; offset++) {
+            byte curr = MemoryAccess.getByteAtOffset(address, offset);
+            if (curr == 0) {
+                return offset;
+            }
+        }
+        throw new IllegalArgumentException("String too large");
+    }
+
+
+    public static VaList newVaList(Consumer<VaList.Builder> actions, Allocator allocator) {
         String name = CSupport.getSystemLinker().name();
         return switch(name) {
-            case Win64.NAME -> Windowsx64Linker.newVaList(actions);
-            case SysV.NAME -> SysVx64Linker.newVaList(actions);
-            case AArch64.NAME -> throw new UnsupportedOperationException("Not yet implemented for this platform");
+            case Win64.NAME -> Windowsx64Linker.newVaList(actions, allocator);
+            case SysV.NAME -> SysVx64Linker.newVaList(actions, allocator);
+            case AArch64.NAME -> AArch64Linker.newVaList(actions, allocator);
             default -> throw new IllegalStateException("Unknown linker name: " + name);
         };
     }
@@ -269,7 +301,7 @@ public class SharedUtils {
         return switch(name) {
             case Win64.NAME -> Windowsx64Linker.newVaListOfAddress(ma);
             case SysV.NAME -> SysVx64Linker.newVaListOfAddress(ma);
-            case AArch64.NAME -> throw new UnsupportedOperationException("Not yet implemented for this platform");
+            case AArch64.NAME -> AArch64Linker.newVaListOfAddress(ma);
             default -> throw new IllegalStateException("Unknown linker name: " + name);
         };
     }
@@ -279,7 +311,7 @@ public class SharedUtils {
         return switch(name) {
             case Win64.NAME -> Windowsx64Linker.emptyVaList();
             case SysV.NAME -> SysVx64Linker.emptyVaList();
-            case AArch64.NAME -> throw new UnsupportedOperationException("Not yet implemented for this platform");
+            case AArch64.NAME -> AArch64Linker.emptyVaList();
             default -> throw new IllegalStateException("Unknown linker name: " + name);
         };
     }
@@ -310,6 +342,35 @@ public class SharedUtils {
             }
         }
         return handle;
+    }
+
+    static void checkType(Class<?> actualType, Class<?> expectedType) {
+        if (expectedType != actualType) {
+            throw new IllegalArgumentException(
+                    String.format("Invalid operand type: %s. %s expected", actualType, expectedType));
+        }
+    }
+
+    public static boolean isTrivial(FunctionDescriptor cDesc) {
+        return cDesc.attribute(FunctionDescriptor.TRIVIAL_ATTRIBUTE_NAME)
+                .map(Boolean.class::cast)
+                .orElse(false);
+    }
+
+    public interface Allocator {
+        default MemorySegment allocate(MemoryLayout layout) {
+            return allocate(layout.byteSize(), layout.byteAlignment());
+        }
+
+        default MemorySegment allocate(long size) {
+            return allocate(size, 1);
+        }
+
+        MemorySegment allocate(long size, long align);
+
+        static Allocator ofScope(NativeScope scope) {
+            return (size, align) -> scope.allocate(size, align).segment();
+        }
     }
 
     public static class SimpleVaArg {
@@ -368,6 +429,11 @@ public class SharedUtils {
         }
 
         @Override
+        public MemorySegment vargAsSegment(MemoryLayout layout, NativeScope scope) {
+            throw uoe();
+        }
+
+        @Override
         public void skip(MemoryLayout... layouts) {
             throw uoe();
         }
@@ -388,8 +454,74 @@ public class SharedUtils {
         }
 
         @Override
+        public VaList copy(NativeScope scope) {
+            throw uoe();
+        }
+
+        @Override
         public MemoryAddress address() {
             return address;
+        }
+    }
+
+    static void writeOverSized(MemoryAddress ptr, Class<?> type, Object o) {
+        // use VH_LONG for integers to zero out the whole register in the process
+        if (type == long.class) {
+            VH_LONG.set(ptr, (long) o);
+        } else if (type == int.class) {
+            VH_LONG.set(ptr, (long) (int) o);
+        } else if (type == short.class) {
+            VH_LONG.set(ptr, (long) (short) o);
+        } else if (type == char.class) {
+            VH_LONG.set(ptr, (long) (char) o);
+        } else if (type == byte.class) {
+            VH_LONG.set(ptr, (long) (byte) o);
+        } else if (type == float.class) {
+            VH_FLOAT.set(ptr, (float) o);
+        } else if (type == double.class) {
+            VH_DOUBLE.set(ptr, (double) o);
+        } else {
+            throw new IllegalArgumentException("Unsupported carrier: " + type);
+        }
+    }
+
+    static void write(MemoryAddress ptr, Class<?> type, Object o) {
+        if (type == long.class) {
+            VH_LONG.set(ptr, (long) o);
+        } else if (type == int.class) {
+            VH_INT.set(ptr, (int) o);
+        } else if (type == short.class) {
+            VH_SHORT.set(ptr, (short) o);
+        } else if (type == char.class) {
+            VH_CHAR.set(ptr, (char) o);
+        } else if (type == byte.class) {
+            VH_BYTE.set(ptr, (byte) o);
+        } else if (type == float.class) {
+            VH_FLOAT.set(ptr, (float) o);
+        } else if (type == double.class) {
+            VH_DOUBLE.set(ptr, (double) o);
+        } else {
+            throw new IllegalArgumentException("Unsupported carrier: " + type);
+        }
+    }
+
+    static Object read(MemoryAddress ptr, Class<?> type) {
+        if (type == long.class) {
+            return (long) VH_LONG.get(ptr);
+        } else if (type == int.class) {
+            return (int) VH_INT.get(ptr);
+        } else if (type == short.class) {
+            return (short) VH_SHORT.get(ptr);
+        } else if (type == char.class) {
+            return (char) VH_CHAR.get(ptr);
+        } else if (type == byte.class) {
+            return (byte) VH_BYTE.get(ptr);
+        } else if (type == float.class) {
+            return (float) VH_FLOAT.get(ptr);
+        } else if (type == double.class) {
+            return (double) VH_DOUBLE.get(ptr);
+        } else {
+            throw new IllegalArgumentException("Unsupported carrier: " + type);
         }
     }
 }

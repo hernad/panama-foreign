@@ -149,6 +149,7 @@ module java.base {
         java.management,
         java.naming,
         java.rmi,
+        jdk.jartool,
         jdk.jlink,
         jdk.net,
         jdk.incubator.foreign;
@@ -194,7 +195,6 @@ module java.base {
         java.net.http,
         java.rmi,
         java.security.jgss,
-        java.xml,
         jdk.attach,
         jdk.charsets,
         jdk.compiler,
@@ -345,6 +345,8 @@ module java.base {
         java.prefs;
     exports sun.util.resources to
         jdk.localedata;
+    exports jdk.internal.invoke to
+        jdk.incubator.foreign;
 
 
     // the service types defined by the APIs in this module

@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ *  Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
  *  DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  *  This code is free software; you can redistribute it and/or modify it
@@ -30,7 +30,26 @@
  *          java.base/sun.security.action
  * @build NativeTestHelper CallGeneratorHelper TestDowncall
  *
- * @run testng/othervm -Dforeign.restricted=permit TestDowncall
+ * @run testng/othervm
+ *   -Dforeign.restricted=permit
+ *   -Djdk.internal.foreign.ProgrammableInvoker.USE_SPEC=false
+ *   -Djdk.internal.foreign.ProgrammableInvoker.USE_INTRINSICS=false
+ *   TestDowncall
+ * @run testng/othervm
+ *   -Dforeign.restricted=permit
+ *   -Djdk.internal.foreign.ProgrammableInvoker.USE_SPEC=true
+ *   -Djdk.internal.foreign.ProgrammableInvoker.USE_INTRINSICS=false
+ *   TestDowncall
+ * @run testng/othervm
+ *   -Dforeign.restricted=permit
+ *   -Djdk.internal.foreign.ProgrammableInvoker.USE_SPEC=false
+ *   -Djdk.internal.foreign.ProgrammableInvoker.USE_INTRINSICS=true
+ *   TestDowncall
+ * @run testng/othervm
+ *   -Dforeign.restricted=permit
+ *   -Djdk.internal.foreign.ProgrammableInvoker.USE_SPEC=true
+ *   -Djdk.internal.foreign.ProgrammableInvoker.USE_INTRINSICS=true
+ *   TestDowncall
  */
 
 import jdk.incubator.foreign.CSupport;

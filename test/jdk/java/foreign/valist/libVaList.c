@@ -73,9 +73,28 @@ EXPORT long long sumBigStruct(va_list list) {
     return point.x + point.y;
 }
 
-EXPORT void sumStack(long long* longSum, double* doubleSum, int numArgs, ...) { // numArgs required by spec
-    va_list list;
-    va_start(list, numArgs);
+typedef struct {
+    long long x;
+    long long y;
+    long long z;
+} HugePoint;
+
+EXPORT long long sumHugeStruct(va_list list) {
+    HugePoint point = va_arg(list, HugePoint);
+    return point.x + point.y + point.z;
+}
+
+typedef struct {
+    float x;
+    float y;
+} FloatPoint;
+
+EXPORT float sumFloatStruct(va_list list) {
+    FloatPoint point = va_arg(list, FloatPoint);
+    return point.x + point.y;
+}
+
+EXPORT void sumStack(long long* longSum, double* doubleSum, va_list list) {
     long long lSum = 0;
     for (int i = 0; i < 16; i++) {
         lSum += va_arg(list, long long);
@@ -86,7 +105,6 @@ EXPORT void sumStack(long long* longSum, double* doubleSum, int numArgs, ...) { 
         dSum += va_arg(list, double);
     }
     *doubleSum = dSum;
-    va_end(list);
 }
 
 // ###### Up calls
@@ -140,9 +158,24 @@ EXPORT void upcallStruct(CB cb) {
     passToUpcall(cb, 1, point);
 }
 
+EXPORT void upcallFloatStruct(CB cb) {
+    FloatPoint point;
+    point.x = 1.0f;
+    point.y = 2.0f;
+    passToUpcall(cb, 1, point);
+}
+
 EXPORT void upcallBigStruct(CB cb) {
     BigPoint point;
     point.x = 8;
     point.y = 16;
+    passToUpcall(cb, 1, point);
+}
+
+EXPORT void upcallHugeStruct(CB cb) {
+    HugePoint point;
+    point.x = 1;
+    point.y = 2;
+    point.z = 3;
     passToUpcall(cb, 1, point);
 }

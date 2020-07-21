@@ -26,12 +26,9 @@
 package jdk.incubator.foreign;
 
 import jdk.internal.foreign.AbstractMemorySegmentImpl;
-import jdk.internal.foreign.MemoryAddressImpl;
-import jdk.internal.foreign.NativeMemorySegmentImpl;
 import jdk.internal.foreign.Utils;
 import jdk.internal.foreign.abi.SharedUtils;
 
-import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.util.Objects;
@@ -58,69 +55,93 @@ public class CSupport {
 
     /**
      * An interface that models a C {@code va_list}.
-     *
+     * <p>
+     * A va list is a stateful cursor used to iterate over a set of variadic arguments.
+     * <p>
      * Per the C specification (see C standard 6.5.2.2 Function calls - item 6),
      * arguments to variadic calls are erased by way of 'default argument promotions',
      * which erases integral types by way of integer promotion (see C standard 6.3.1.1 - item 2),
      * and which erases all {@code float} arguments to {@code double}.
-     *
+     * <p>
      * As such, this interface only supports reading {@code int}, {@code double},
      * and any other type that fits into a {@code long}.
      */
     public interface VaList extends AutoCloseable {
 
         /**
-         * Reads a value into an {@code int}
+         * Reads the next value as an {@code int} and advances this va list's position.
          *
          * @param layout the layout of the value
          * @return the value read as an {@code int}
          * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
          * (see {@link #close()}).
+         * @throws IllegalArgumentException if the given memory layout is not compatible with {@code int}
          */
         int vargAsInt(MemoryLayout layout);
 
         /**
-         * Reads a value into a {@code long}
+         * Reads the next value as a {@code long} and advances this va list's position.
          *
          * @param layout the layout of the value
          * @return the value read as an {@code long}
          * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
          * (see {@link #close()}).
+         * @throws IllegalArgumentException if the given memory layout is not compatible with {@code long}
          */
         long vargAsLong(MemoryLayout layout);
 
         /**
-         * Reads a value into a {@code double}
+         * Reads the next value as a {@code double} and advances this va list's position.
          *
          * @param layout the layout of the value
          * @return the value read as an {@code double}
          * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
          * (see {@link #close()}).
+         * @throws IllegalArgumentException if the given memory layout is not compatible with {@code double}
          */
         double vargAsDouble(MemoryLayout layout);
 
         /**
-         * Reads a value into a {@code MemoryAddress}
+         * Reads the next value as a {@code MemoryAddress} and advances this va list's position.
          *
          * @param layout the layout of the value
          * @return the value read as an {@code MemoryAddress}
          * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
          * (see {@link #close()}).
+         * @throws IllegalArgumentException if the given memory layout is not compatible with {@code MemoryAddress}
          */
         MemoryAddress vargAsAddress(MemoryLayout layout);
 
         /**
-         * Reads a value into a {@code MemorySegment}
+         * Reads the next value as a {@code MemorySegment}, and advances this va list's position.
+         * <p>
+         * The memory segment returned by this method will be allocated using
+         * {@link MemorySegment#allocateNative(long, long)}, and will have to be closed separately.
          *
          * @param layout the layout of the value
          * @return the value read as an {@code MemorySegment}
          * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
          * (see {@link #close()}).
+         * @throws IllegalArgumentException if the given memory layout is not compatible with {@code MemorySegment}
          */
         MemorySegment vargAsSegment(MemoryLayout layout);
 
         /**
-         * Skips a number of va arguments with the given memory layouts.
+         * Reads the next value as a {@code MemorySegment}, and advances this va list's position.
+         * <p>
+         * The memory segment returned by this method will be allocated using the given {@code NativeScope}.
+         *
+         * @param layout the layout of the value
+         * @param scope the scope to allocate the segment in
+         * @return the value read as an {@code MemorySegment}
+         * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
+         * (see {@link #close()}).
+         * @throws IllegalArgumentException if the given memory layout is not compatible with {@code MemorySegment}
+         */
+        MemorySegment vargAsSegment(MemoryLayout layout, NativeScope scope);
+
+        /**
+         * Skips a number of elements with the given memory layouts, and advances this va list's position.
          *
          * @param layouts the layout of the value
          * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
@@ -130,8 +151,7 @@ public class CSupport {
 
         /**
          * A predicate used to check if the memory associated with the C {@code va_list} modelled
-         * by this instance is still valid; or, in other words, if {@code close()} has been called on this
-         * instance.
+         * by this instance is still valid to use.
          *
          * @return true, if the memory associated with the C {@code va_list} modelled by this instance is still valid
          * @see #close()
@@ -139,21 +159,55 @@ public class CSupport {
         boolean isAlive();
 
         /**
-         * Releases the underlying C {@code va_list} modelled by this instance. As a result, subsequent attempts to call
-         * operations on this instance (e.g. {@link #copy()} will fail with an exception.
+         * Releases the underlying C {@code va_list} modelled by this instance, and any native memory that is attached
+         * to this va list that holds its elements (see {@link VaList#make(Consumer)}).
+         * <p>
+         * After calling this method, {@link #isAlive()} will return {@code false} and further attempts to read values
+         * from this va list will result in an exception.
          *
          * @see #isAlive()
          */
         void close();
 
         /**
-         * Copies this C {@code va_list}.
+         * Copies this C {@code va_list} at its current position. Copying is useful to traverse the va list's elements
+         * starting from the current position, without affecting the state of the original va list, essentially
+         * allowing the elements to be traversed multiple times.
+         * <p>
+         * If this method needs to allocate native memory for the copy, it will use
+         * {@link MemorySegment#allocateNative(long, long)} to do so. {@link #close()} will have to be called on the
+         * returned va list instance to release the allocated memory.
+         * <p>
+         * This method only copies the va list cursor itself and not the memory that may be attached to the
+         * va list which holds its elements. That means that if this va list was created with the
+         * {@link #make(Consumer)} method, closing this va list will also release the native memory that holds its
+         * elements, making the copy unusable.
          *
          * @return a copy of this C {@code va_list}.
          * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
          * (see {@link #close()}).
          */
         VaList copy();
+
+        /**
+         * Copies this C {@code va_list} at its current position. Copying is useful to traverse the va list's elements
+         * starting from the current position, without affecting the state of the original va list, essentially
+         * allowing the elements to be traversed multiple times.
+         * <p>
+         * If this method needs to allocate native memory for the copy, it will use
+         * the given {@code NativeScope} to do so.
+         * <p>
+         * This method only copies the va list cursor itself and not the memory that may be attached to the
+         * va list which holds its elements. That means that if this va list was created with the
+         * {@link #make(Consumer)} method, closing this va list will also release the native memory that holds its
+         * elements, making the copy unusable.
+         *
+         * @param scope the scope to allocate the copy in
+         * @return a copy of this C {@code va_list}.
+         * @throws IllegalStateException if the C {@code va_list} associated with this instance is no longer valid
+         * (see {@link #close()}).
+         */
+        VaList copy(NativeScope scope);
 
         /**
          * Returns the memory address of the C {@code va_list} associated with this instance.
@@ -174,21 +228,48 @@ public class CSupport {
 
         /**
          * Constructs a new {@code VaList} using a builder (see {@link Builder}).
-         *
-         * Note that when there are no arguments added to the created va list,
+         * <p>
+         * If this method needs to allocate native memory for the va list, it will use
+         * {@link MemorySegment#allocateNative(long, long)} to do so.
+         * <p>
+         * This method will allocate native memory to hold the elements in the va list. This memory
+         * will be 'attached' to the returned va list instance, and will be released when {@link VaList#close()}
+         * is called.
+         * <p>
+         * Note that when there are no elements added to the created va list,
          * this method will return the same as {@linkplain #empty()}.
          *
-         * @param actions a consumer for a builder (see {@link Builder}) which can be used to specify the contents
+         * @param actions a consumer for a builder (see {@link Builder}) which can be used to specify the elements
          *                of the underlying C {@code va_list}.
          * @return a new {@code VaList} instance backed by a fresh C {@code va_list}.
          */
         static VaList make(Consumer<VaList.Builder> actions) {
-            return SharedUtils.newVaList(actions);
+            return SharedUtils.newVaList(actions, MemorySegment::allocateNative);
+        }
+
+        /**
+         * Constructs a new {@code VaList} using a builder (see {@link Builder}).
+         * <p>
+         * If this method needs to allocate native memory for the va list, it will use
+         * the given {@code NativeScope} to do so.
+         * <p>
+         * This method will allocate native memory to hold the elements in the va list. This memory
+         * will be managed by the given {@code NativeScope}, and will be released when the scope is closed.
+         * <p>
+         * Note that when there are no elements added to the created va list,
+         * this method will return the same as {@linkplain #empty()}.
+         *
+         * @param actions a consumer for a builder (see {@link Builder}) which can be used to specify the elements
+         *                of the underlying C {@code va_list}.
+         * @return a new {@code VaList} instance backed by a fresh C {@code va_list}.
+         */
+        static VaList make(Consumer<VaList.Builder> actions, NativeScope scope) {
+            return SharedUtils.newVaList(actions, SharedUtils.Allocator.ofScope(scope));
         }
 
         /**
          * Returns an empty C {@code va_list} constant.
-         *
+         * <p>
          * The returned {@code VaList} can not be closed.
          *
          * @return a {@code VaList} modelling an empty C {@code va_list}.
@@ -208,6 +289,7 @@ public class CSupport {
              * @param layout the native layout of the value.
              * @param value the value, represented as an {@code int}.
              * @return this builder.
+             * @throws IllegalArgumentException if the given memory layout is not compatible with {@code int}
              */
             Builder vargFromInt(MemoryLayout layout, int value);
 
@@ -217,6 +299,7 @@ public class CSupport {
              * @param layout the native layout of the value.
              * @param value the value, represented as a {@code long}.
              * @return this builder.
+             * @throws IllegalArgumentException if the given memory layout is not compatible with {@code long}
              */
             Builder vargFromLong(MemoryLayout layout, long value);
 
@@ -226,6 +309,7 @@ public class CSupport {
              * @param layout the native layout of the value.
              * @param value the value, represented as a {@code double}.
              * @return this builder.
+             * @throws IllegalArgumentException if the given memory layout is not compatible with {@code double}
              */
             Builder vargFromDouble(MemoryLayout layout, double value);
 
@@ -235,6 +319,7 @@ public class CSupport {
              * @param layout the native layout of the value.
              * @param value the value, represented as a {@code MemoryAddress}.
              * @return this builder.
+             * @throws IllegalArgumentException if the given memory layout is not compatible with {@code MemoryAddress}
              */
             Builder vargFromAddress(MemoryLayout layout, MemoryAddress value);
 
@@ -244,6 +329,7 @@ public class CSupport {
              * @param layout the native layout of the value.
              * @param value the value, represented as a {@code MemorySegment}.
              * @return this builder.
+             * @throws IllegalArgumentException if the given memory layout is not compatible with {@code MemorySegment}
              */
             Builder vargFromSegment(MemoryLayout layout, MemorySegment value);
         }
@@ -293,7 +379,7 @@ public class CSupport {
     /**
      * The {@code va_list} native type.
      */
-    public static final MemoryLayout C_VA_LIST = Utils.pick(SysV.C_VA_LIST, Win64.C_VA_LIST, null);
+    public static final MemoryLayout C_VA_LIST = Utils.pick(SysV.C_VA_LIST, Win64.C_VA_LIST, AArch64.C_VA_LIST);
 
     /**
      * This class defines layout constants modelling standard primitive types supported by the x64 SystemV ABI.
@@ -304,17 +390,30 @@ public class CSupport {
         }
 
         /**
-         * The name of the SysV linker ({@see ForeignLinker#name})
+         * The name of the SysV linker
+         * @see ForeignLinker#name
          */
         public static final String NAME = "SysV";
 
+        /**
+         * The name of the layout attribute (see {@link MemoryLayout#attributes()} used for ABI classification. The
+         * attribute value must be an enum constant from {@link ArgumentClass}.
+         */
         public final static String CLASS_ATTRIBUTE_NAME = "abi/sysv/class";
 
+        /**
+         * Constants used for ABI classification. They are referred to by the layout attribute {@link #CLASS_ATTRIBUTE_NAME}.
+         */
         public enum ArgumentClass {
+            /** Classification constant for integral values */
             INTEGER,
+            /** Classification constant for floating point values */
             SSE,
+            /** Classification constant for x87 floating point values */
             X87,
+            /** Classification constant for {@code complex long double} values */
             COMPLEX_87,
+            /** Classification constant for machine pointer values */
             POINTER;
         }
 
@@ -400,17 +499,32 @@ public class CSupport {
         }
 
         /**
-         * The name of the Windows linker ({@see ForeignLinker#name})
+         * The name of the Windows linker
+         * @see ForeignLinker#name
          */
         public final static String NAME = "Windows";
 
+        /**
+         * The name of the layout attribute (see {@link MemoryLayout#attributes()} used to mark variadic parameters. The
+         * attribute value must be a boolean.
+         */
         public final static String VARARGS_ATTRIBUTE_NAME = "abi/windows/varargs";
 
+        /**
+         * The name of the layout attribute (see {@link MemoryLayout#attributes()} used for ABI classification. The
+         * attribute value must be an enum constant from {@link ArgumentClass}.
+         */
         public final static String CLASS_ATTRIBUTE_NAME = "abi/windows/class";
 
+        /**
+         * Constants used for ABI classification. They are referred to by the layout attribute {@link #CLASS_ATTRIBUTE_NAME}.
+         */
         public enum ArgumentClass {
+            /** Classification constant for integral values */
             INTEGER,
+            /** Classification constant for floating point values */
             FLOAT,
+            /** Classification constant for machine pointer values */
             POINTER;
         }
 
@@ -479,8 +593,14 @@ public class CSupport {
          */
         public static final MemoryLayout C_VA_LIST = Win64.C_POINTER;
 
-        public static ValueLayout asVarArg(ValueLayout l) {
-            return l.withAttribute(VARARGS_ATTRIBUTE_NAME, "true");
+        /**
+         * Return a new memory layout which describes a variadic parameter to be passed to a function.
+         * @param layout the original parameter layout.
+         * @return a layout which is the same as {@code layout}, except for the extra attribute {@link #VARARGS_ATTRIBUTE_NAME},
+         * which is set to {@code true}.
+         */
+        public static ValueLayout asVarArg(ValueLayout layout) {
+            return layout.withAttribute(VARARGS_ATTRIBUTE_NAME, true);
         }
     }
 
@@ -494,15 +614,26 @@ public class CSupport {
         }
 
         /**
-         * The name of the AArch64 linker ({@see ForeignLinker#name})
+         * The name of the AArch64 linker
+         * @see ForeignLinker#name
          */
         public final static String NAME = "AArch64";
 
+        /**
+         * The name of the layout attribute (see {@link MemoryLayout#attributes()} used for ABI classification. The
+         * attribute value must be an enum constant from {@link ArgumentClass}.
+         */
         public static final String CLASS_ATTRIBUTE_NAME = "abi/aarch64/class";
 
+        /**
+         * Constants used for ABI classification. They are referred to by the layout attribute {@link #CLASS_ATTRIBUTE_NAME}.
+         */
         public enum ArgumentClass {
+            /** Classification constant for machine integral values */
             INTEGER,
+            /** Classification constant for machine floating point values */
             VECTOR,
+            /** Classification constant for machine pointer values */
             POINTER;
         }
 
@@ -565,10 +696,12 @@ public class CSupport {
          */
         public static final ValueLayout C_POINTER = MemoryLayouts.BITS_64_LE
                 .withAttribute(CLASS_ATTRIBUTE_NAME, ArgumentClass.POINTER);
-    }
 
-    private final static VarHandle byteArrHandle =
-            MemoryLayout.ofSequence(C_CHAR).varHandle(byte.class, MemoryLayout.PathElement.sequenceElement());
+        /**
+         * The {@code va_list} native type, as it is passed to a function.
+         */
+        public static final MemoryLayout C_VA_LIST = AArch64.C_POINTER;
+    }
 
     /**
      * Convert a Java string into a null-terminated C string, using the
@@ -668,7 +801,7 @@ public class CSupport {
      */
     public static String toJavaStringRestricted(MemoryAddress addr) {
         Utils.checkRestrictedAccess("CSupport.toJavaStringRestricted");
-        return toJavaStringInternal(addr.rebase(AbstractMemorySegmentImpl.EVERYTHING), Charset.defaultCharset());
+        return SharedUtils.toJavaStringInternal(addr.rebase(AbstractMemorySegmentImpl.EVERYTHING), Charset.defaultCharset());
     }
 
     /**
@@ -690,7 +823,7 @@ public class CSupport {
      */
     public static String toJavaStringRestricted(MemoryAddress addr, Charset charset) {
         Utils.checkRestrictedAccess("CSupport.toJavaStringRestricted");
-        return toJavaStringInternal(addr.rebase(AbstractMemorySegmentImpl.EVERYTHING), charset);
+        return SharedUtils.toJavaStringInternal(addr.rebase(AbstractMemorySegmentImpl.EVERYTHING), charset);
     }
 
     /**
@@ -705,10 +838,10 @@ public class CSupport {
      * @throws NullPointerException if {@code addr == null}
      * @throws IllegalArgumentException if the size of the native string is greater than {@code Integer.MAX_VALUE}.
      * @throws IllegalStateException if the size of the native string is greater than the size of the segment
-     * associated with {@code addr}, or if {@code addr} is associated with a segment that is </em>not alive<em>.
+     * associated with {@code addr}, or if {@code addr} is associated with a segment that is <em>not alive</em>.
      */
     public static String toJavaString(MemoryAddress addr) {
-        return toJavaStringInternal(addr, Charset.defaultCharset());
+        return SharedUtils.toJavaStringInternal(addr, Charset.defaultCharset());
     }
 
     /**
@@ -724,35 +857,16 @@ public class CSupport {
      * @throws NullPointerException if {@code addr == null}
      * @throws IllegalArgumentException if the size of the native string is greater than {@code Integer.MAX_VALUE}.
      * @throws IllegalStateException if the size of the native string is greater than the size of the segment
-     * associated with {@code addr}, or if {@code addr} is associated with a segment that is </em>not alive<em>.
+     * associated with {@code addr}, or if {@code addr} is associated with a segment that is <em>not alive</em>.
      */
     public static String toJavaString(MemoryAddress addr, Charset charset) {
-        return toJavaStringInternal(addr, charset);
-    }
-
-    private static String toJavaStringInternal(MemoryAddress addr, Charset charset) {
-        int len = strlen(addr);
-        byte[] bytes = new byte[len];
-        MemorySegment.ofArray(bytes)
-                .copyFrom(NativeMemorySegmentImpl.makeNativeSegmentUnchecked(addr, len, null, null, null));
-        return new String(bytes, charset);
-    }
-
-    private static int strlen(MemoryAddress address) {
-        // iterate until overflow (String can only hold a byte[], whose length can be expressed as an int)
-        for (int offset = 0; offset >= 0; offset++) {
-            byte curr = (byte) byteArrHandle.get(address, (long) offset);
-            if (curr == 0) {
-                return offset;
-            }
-        }
-        throw new IllegalArgumentException("String too large");
+        return SharedUtils.toJavaStringInternal(addr, charset);
     }
 
     private static void copy(MemoryAddress addr, byte[] bytes) {
         var heapSegment = MemorySegment.ofArray(bytes);
         addr.segment().copyFrom(heapSegment);
-        byteArrHandle.set(addr, (long)bytes.length, (byte)0);
+        MemoryAccess.setByteAtOffset(addr, bytes.length, (byte)0);
     }
 
     private static MemorySegment toCString(byte[] bytes) {

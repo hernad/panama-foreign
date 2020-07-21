@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -260,7 +260,7 @@ class nmethod : public CompiledMethod {
   // The _hotness_counter indicates the hotness of a method. The higher
   // the value the hotter the method. The hotness counter of a nmethod is
   // set to [(ReservedCodeCacheSize / (1024 * 1024)) * 2] each time the method
-  // is active while stack scanning (mark_active_nmethods()). The hotness
+  // is active while stack scanning (do_stack_scanning()). The hotness
   // counter is decreased (by 1) while sweeping.
   int _hotness_counter;
 
@@ -281,6 +281,9 @@ class nmethod : public CompiledMethod {
   // for non-static native wrapper frames.
   ByteSize _native_receiver_sp_offset;
   ByteSize _native_basic_lock_sp_offset;
+
+  address* _native_stubs;
+  int _num_stubs;
 
   friend class nmethodLocker;
 
@@ -312,7 +315,9 @@ class nmethod : public CompiledMethod {
           ExceptionHandlerTable* handler_table,
           ImplicitExceptionTable* nul_chk_table,
           AbstractCompiler* compiler,
-          int comp_level
+          int comp_level,
+          address* native_stubs,
+          int num_stubs
 #if INCLUDE_JVMCI
           , char* speculations,
           int speculations_len,
@@ -360,7 +365,9 @@ class nmethod : public CompiledMethod {
                               ExceptionHandlerTable* handler_table,
                               ImplicitExceptionTable* nul_chk_table,
                               AbstractCompiler* compiler,
-                              int comp_level
+                              int comp_level,
+                              address* native_stubs = NULL,
+                              int num_stubs = 0
 #if INCLUDE_JVMCI
                               , char* speculations = NULL,
                               int speculations_len = 0,
@@ -524,6 +531,8 @@ class nmethod : public CompiledMethod {
 
   void copy_values(GrowableArray<jobject>* oops);
   void copy_values(GrowableArray<Metadata*>* metadata);
+
+  void free_native_stubs();
 
   // Relocation support
 private:

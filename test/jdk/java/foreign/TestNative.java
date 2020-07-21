@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
  *  DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  *  This code is free software; you can redistribute it and/or modify it
@@ -24,18 +24,17 @@
 
 /*
  * @test
- * @modules java.base/jdk.internal.misc
- *          jdk.incubator.foreign/jdk.internal.foreign
+ * @modules jdk.incubator.foreign/jdk.internal.foreign
  * @run testng/othervm -Dforeign.restricted=permit TestNative
  */
 
+import jdk.incubator.foreign.MemoryAccess;
 import jdk.incubator.foreign.MemoryAddress;
 import jdk.incubator.foreign.MemoryLayout;
 import jdk.incubator.foreign.MemoryLayout.PathElement;
 import jdk.incubator.foreign.MemoryLayouts;
 import jdk.incubator.foreign.MemorySegment;
 import jdk.incubator.foreign.SequenceLayout;
-import jdk.internal.misc.Unsafe;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -57,12 +56,6 @@ import static jdk.incubator.foreign.MemorySegment.*;
 import static org.testng.Assert.*;
 
 public class TestNative {
-
-    static Unsafe UNSAFE;
-
-    static {
-        UNSAFE = Unsafe.getUnsafe();
-    }
 
     static SequenceLayout bytes = MemoryLayout.ofSequence(100,
             MemoryLayouts.JAVA_BYTE.withOrder(ByteOrder.nativeOrder())
@@ -184,6 +177,13 @@ public class TestNative {
     }
 
     @Test
+    public void testDefaultAccessModesEverthing() {
+        MemorySegment everything = MemorySegment.ofNativeRestricted();
+        assertTrue(everything.hasAccessModes(READ | WRITE));
+        assertEquals(everything.accessModes(), READ | WRITE);
+    }
+
+    @Test
     public void testMallocSegment() {
         MemoryAddress addr = MemoryAddress.ofLong(allocate(12));
         assertNull(addr.segment());
@@ -192,6 +192,17 @@ public class TestNative {
         assertEquals(mallocSegment.byteSize(), 12);
         mallocSegment.close(); //free here
         assertTrue(!mallocSegment.isAlive());
+    }
+
+    @Test
+    public void testEverythingSegment() {
+        MemoryAddress addr = MemoryAddress.ofLong(allocate(4));
+        assertNull(addr.segment());
+        MemorySegment everything = MemorySegment.ofNativeRestricted();
+        MemoryAddress ptr = addr.rebase(everything);
+        MemoryAccess.setInt(ptr, 42);
+        assertEquals(MemoryAccess.getInt(ptr), 42);
+        free(addr.toRawLongValue());
     }
 
     @Test(expectedExceptions = IllegalArgumentException.class)

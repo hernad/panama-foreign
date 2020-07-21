@@ -46,7 +46,6 @@
 #include "compiler/compileBroker.hpp"
 #include "compiler/oopMap.hpp"
 #include "gc/shared/vmStructs_gc.hpp"
-#include "interpreter/bytecodeInterpreter.hpp"
 #include "interpreter/bytecodes.hpp"
 #include "interpreter/interpreter.hpp"
 #include "memory/allocation.hpp"
@@ -532,9 +531,8 @@ typedef HashtableEntry<InstanceKlass*, mtClass>  KlassHashtableEntry;
   /* GrowableArrays  */                                                                                                              \
   /*******************/                                                                                                              \
                                                                                                                                      \
-  nonstatic_field(GenericGrowableArray,        _len,                                          int)                                   \
-  nonstatic_field(GenericGrowableArray,        _max,                                          int)                                   \
-  nonstatic_field(GenericGrowableArray,        _arena,                                        Arena*)                                \
+  nonstatic_field(GrowableArrayBase,           _len,                                          int)                                   \
+  nonstatic_field(GrowableArrayBase,           _max,                                          int)                                   \
   nonstatic_field(GrowableArray<int>,          _data,                                         int*)                                  \
                                                                                                                                      \
   /********************************/                                                                                                 \
@@ -920,7 +918,7 @@ typedef HashtableEntry<InstanceKlass*, mtClass>  KlassHashtableEntry;
   c2_nonstatic_field(Node,                     _outcnt,                                       node_idx_t)                            \
   c2_nonstatic_field(Node,                     _outmax,                                       node_idx_t)                            \
   c2_nonstatic_field(Node,                     _idx,                                          const node_idx_t)                      \
-  c2_nonstatic_field(Node,                     _class_id,                                     jushort)                               \
+  c2_nonstatic_field(Node,                     _class_id,                                     juint)                                 \
   c2_nonstatic_field(Node,                     _flags,                                        jushort)                               \
                                                                                                                                      \
   c2_nonstatic_field(Compile,                  _root,                                         RootNode*)                             \
@@ -1339,7 +1337,7 @@ typedef HashtableEntry<InstanceKlass*, mtClass>  KlassHashtableEntry;
   declare_toplevel_type(SystemDictionary)                                 \
   declare_toplevel_type(vmSymbols)                                        \
                                                                           \
-  declare_toplevel_type(GenericGrowableArray)                             \
+  declare_toplevel_type(GrowableArrayBase)                                \
   declare_toplevel_type(GrowableArray<int>)                               \
   declare_toplevel_type(Arena)                                            \
     declare_type(ResourceArea, Arena)                                     \
@@ -1537,6 +1535,7 @@ typedef HashtableEntry<InstanceKlass*, mtClass>  KlassHashtableEntry;
   declare_c2_type(CallDynamicJavaNode, CallJavaNode)                      \
   declare_c2_type(CallRuntimeNode, CallNode)                              \
   declare_c2_type(CallLeafNode, CallRuntimeNode)                          \
+  declare_c2_type(CallNativeNode, CallNode)                               \
   declare_c2_type(CallLeafNoFPNode, CallLeafNode)                         \
   declare_c2_type(AllocateNode, CallNode)                                 \
   declare_c2_type(AllocateArrayNode, AllocateNode)                        \
@@ -1653,6 +1652,7 @@ typedef HashtableEntry<InstanceKlass*, mtClass>  KlassHashtableEntry;
   declare_c2_type(MachCallStaticJavaNode, MachCallJavaNode)               \
   declare_c2_type(MachCallDynamicJavaNode, MachCallJavaNode)              \
   declare_c2_type(MachCallRuntimeNode, MachCallNode)                      \
+  declare_c2_type(MachCallNativeNode, MachCallNode)                       \
   declare_c2_type(MachHaltNode, MachReturnNode)                           \
   declare_c2_type(MachTempNode, MachNode)                                 \
   declare_c2_type(MemNode, Node)                                          \
@@ -2546,6 +2546,7 @@ typedef HashtableEntry<InstanceKlass*, mtClass>  KlassHashtableEntry;
   declare_constant(vmIntrinsics::_linkToStatic)                           \
   declare_constant(vmIntrinsics::_linkToSpecial)                          \
   declare_constant(vmIntrinsics::_linkToInterface)                        \
+  declare_constant(vmIntrinsics::_linkToNative)                           \
                                                                           \
   /********************************/                                      \
   /* Calling convention constants */                                      \

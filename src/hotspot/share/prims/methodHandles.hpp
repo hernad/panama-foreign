@@ -25,7 +25,7 @@
 #ifndef SHARE_PRIMS_METHODHANDLES_HPP
 #define SHARE_PRIMS_METHODHANDLES_HPP
 
-#include "classfile/javaClasses.hpp"
+#include "classfile/systemDictionary.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "runtime/frame.hpp"
 #include "runtime/globals.hpp"
@@ -35,7 +35,6 @@
 # include "entry_zero.hpp"
 # include "interpreter/interpreter.hpp"
 #endif
-
 
 class MacroAssembler;
 class Label;
@@ -119,7 +118,7 @@ class MethodHandles: AllStatic {
   static bool has_member_arg(vmIntrinsics::ID iid) {
     assert(is_signature_polymorphic(iid), "");
     return (iid >= vmIntrinsics::_linkToVirtual &&
-            iid <= vmIntrinsics::_linkToInterface);
+            iid <= vmIntrinsics::_linkToNative);
   }
   static bool has_member_arg(Symbol* klass, Symbol* name) {
     if ((klass == vmSymbols::java_lang_invoke_MethodHandle() ||

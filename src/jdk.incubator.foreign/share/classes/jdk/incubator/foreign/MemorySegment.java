@@ -158,8 +158,8 @@ MemorySegment segment = ...
 SequenceLayout SEQUENCE_LAYOUT = MemoryLayout.ofSequence(1024, MemoryLayouts.JAVA_INT);
 VarHandle VH_int = SEQUENCE_LAYOUT.elementLayout().varHandle(int.class);
 int sum = StreamSupport.stream(MemorySegment.spliterator(segment, SEQUENCE_LAYOUT), true)
-.mapToInt(s -> (int)VH_int.get(s.baseAddress()))
-.sum();
+                       .mapToInt(s -> (int)VH_int.get(s.baseAddress()))
+                       .sum();
  * }</pre></blockquote>
  *
  * @apiNote In the future, if the Java language permits, {@link MemorySegment}
@@ -404,6 +404,72 @@ for (long l = 0; l < segment.byteSize(); l++) {
     byte[] toByteArray();
 
     /**
+     * Copy the contents of this memory segment into a fresh short array.
+     * @return a fresh short array copy of this memory segment.
+     * @throws UnsupportedOperationException if this segment does not feature the {@link #READ} access mode, or if this
+     * segment's contents cannot be copied into a {@link short[]} instance, e.g. because {@code byteSize() % 2 != 0},
+     * or {@code byteSize() / 2 > Integer#MAX_VALUE}.
+     * @throws IllegalStateException if this segment has been closed, or if access occurs from a thread other than the
+     * thread owning this segment.
+     */
+    short[] toShortArray();
+
+    /**
+     * Copy the contents of this memory segment into a fresh char array.
+     * @return a fresh char array copy of this memory segment.
+     * @throws UnsupportedOperationException if this segment does not feature the {@link #READ} access mode, or if this
+     * segment's contents cannot be copied into a {@link char[]} instance, e.g. because {@code byteSize() % 2 != 0},
+     * or {@code byteSize() / 2 > Integer#MAX_VALUE}.
+     * @throws IllegalStateException if this segment has been closed, or if access occurs from a thread other than the
+     * thread owning this segment.
+     */
+    char[] toCharArray();
+
+    /**
+     * Copy the contents of this memory segment into a fresh int array.
+     * @return a fresh int array copy of this memory segment.
+     * @throws UnsupportedOperationException if this segment does not feature the {@link #READ} access mode, or if this
+     * segment's contents cannot be copied into a {@link int[]} instance, e.g. because {@code byteSize() % 4 != 0},
+     * or {@code byteSize() / 4 > Integer#MAX_VALUE}.
+     * @throws IllegalStateException if this segment has been closed, or if access occurs from a thread other than the
+     * thread owning this segment.
+     */
+    int[] toIntArray();
+
+    /**
+     * Copy the contents of this memory segment into a fresh float array.
+     * @return a fresh float array copy of this memory segment.
+     * @throws UnsupportedOperationException if this segment does not feature the {@link #READ} access mode, or if this
+     * segment's contents cannot be copied into a {@link float[]} instance, e.g. because {@code byteSize() % 4 != 0},
+     * or {@code byteSize() / 4 > Integer#MAX_VALUE}.
+     * @throws IllegalStateException if this segment has been closed, or if access occurs from a thread other than the
+     * thread owning this segment.
+     */
+    float[] toFloatArray();
+
+    /**
+     * Copy the contents of this memory segment into a fresh long array.
+     * @return a fresh long array copy of this memory segment.
+     * @throws UnsupportedOperationException if this segment does not feature the {@link #READ} access mode, or if this
+     * segment's contents cannot be copied into a {@link long[]} instance, e.g. because {@code byteSize() % 8 != 0},
+     * or {@code byteSize() / 8 > Integer#MAX_VALUE}.
+     * @throws IllegalStateException if this segment has been closed, or if access occurs from a thread other than the
+     * thread owning this segment.
+     */
+    long[] toLongArray();
+
+    /**
+     * Copy the contents of this memory segment into a fresh double array.
+     * @return a fresh double array copy of this memory segment.
+     * @throws UnsupportedOperationException if this segment does not feature the {@link #READ} access mode, or if this
+     * segment's contents cannot be copied into a {@link double[]} instance, e.g. because {@code byteSize() % 8 != 0},
+     * or {@code byteSize() / 8 > Integer#MAX_VALUE}.
+     * @throws IllegalStateException if this segment has been closed, or if access occurs from a thread other than the
+     * thread owning this segment.
+     */
+    double[] toDoubleArray();
+
+    /**
      * Creates a new buffer memory segment that models the memory associated with the given byte
      * buffer. The segment starts relative to the buffer's position (inclusive)
      * and ends relative to the buffer's limit (exclusive).
@@ -613,6 +679,29 @@ allocateNative(bytesSize, 1);
     }
 
     /**
+     * Returns a native memory segment whose base address is {@link MemoryAddress#NULL} and whose size is {@link Long#MAX_VALUE}.
+     * This method can be very useful when dereferencing memory addresses obtained when interacting with native libraries.
+     * The segment will feature the {@link #READ} and {@link #WRITE} <a href="#access-modes">access modes</a>.
+     * Equivalent to (but likely more efficient than) the following code:
+     * <pre>{@code
+    MemorySegment.ofNativeRestricted(MemoryAddress.NULL, Long.MAX_VALUE, null, null, null)
+                 .withAccessModes(READ | WRITE);
+     * }</pre>
+     * <p>
+     * This method is <em>restricted</em>. Restricted methods are unsafe, and, if used incorrectly, their use might crash
+     * the JVM or, worse, silently result in memory corruption. Thus, clients should refrain from depending on
+     * restricted methods, and use safe and supported functionalities, where possible.
+     *
+     * @return a memory segment whose base address is {@link MemoryAddress#NULL} and whose size is {@link Long#MAX_VALUE}.
+     * @throws IllegalAccessError if the runtime property {@code foreign.restricted} is not set to either
+     * {@code permit}, {@code warn} or {@code debug} (the default value is set to {@code deny}).
+     */
+    static MemorySegment ofNativeRestricted() {
+        Utils.checkRestrictedAccess("MemorySegment.ofNativeRestricted");
+        return NativeMemorySegmentImpl.EVERYTHING;
+    }
+
+    /**
      * Returns a new native memory segment with given base address and size; the returned segment has its own temporal
      * bounds, and can therefore be closed; closing such a segment can optionally result in calling an user-provided cleanup
      * action. This method can be very useful when interacting with custom native memory sources (e.g. custom allocators,
@@ -620,7 +709,7 @@ allocateNative(bytesSize, 1);
      * (often as a plain {@code long} value). The segment will feature all <a href="#access-modes">access modes</a>
      * (see {@link #ALL_ACCESS}).
      * <p>
-     * This method is <em>restricted</em>. Restricted method are unsafe, and, if used incorrectly, their use might crash
+     * This method is <em>restricted</em>. Restricted methods are unsafe, and, if used incorrectly, their use might crash
      * the JVM or, worse, silently result in memory corruption. Thus, clients should refrain from depending on
      * restricted methods, and use safe and supported functionalities, where possible.
      *

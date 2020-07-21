@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -41,6 +41,9 @@ class JNIHandles : AllStatic {
   static OopStorage* _global_handles;
   static OopStorage* _weak_global_handles;
   friend void jni_handles_init();
+
+  static OopStorage* global_handles();
+  static OopStorage* weak_global_handles();
 
   inline static bool is_jweak(jobject handle);
   inline static oop* jobject_ptr(jobject handle); // NOT jweak!
@@ -124,6 +127,8 @@ class JNIHandles : AllStatic {
   static void weak_oops_do(BoolObjectClosure* is_alive, OopClosure* f);
   // Traversal of weak global handles.
   static void weak_oops_do(OopClosure* f);
+
+  static bool is_global_storage(const OopStorage* storage);
 };
 
 
@@ -132,7 +137,7 @@ class JNIHandles : AllStatic {
 
 class JNIHandleBlock : public CHeapObj<mtInternal> {
   friend class VMStructs;
-  friend class CppInterpreter;
+  friend class ZeroInterpreter;
 
  private:
   enum SomeConstants {

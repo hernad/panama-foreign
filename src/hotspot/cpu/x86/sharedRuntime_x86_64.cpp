@@ -1848,7 +1848,7 @@ static void gen_special_dispatch(MacroAssembler* masm,
     member_arg_pos = method->size_of_parameters() - 1;  // trailing MemberName argument
     member_reg = rbx;  // known to be free at this point
     has_receiver = MethodHandles::ref_kind_has_receiver(ref_kind);
-  } else if (iid == vmIntrinsics::_invokeBasic) {
+  } else if (iid == vmIntrinsics::_invokeBasic || iid == vmIntrinsics::_linkToNative) {
     has_receiver = true;
   } else {
     fatal("unexpected intrinsic id %d", iid);
@@ -3673,20 +3673,227 @@ RuntimeStub* SharedRuntime::generate_resolve_blob(address destination, const cha
   return RuntimeStub::new_runtime_stub(name, &buffer, frame_complete, frame_size_in_words, oop_maps, true);
 }
 
+static const int native_invoker_code_size = MethodHandles::adapter_code_size;
+
+class NativeInvokerGenerator : public StubCodeGenerator {
+  address _call_target;
+  int _shadow_space_bytes;
+
+  const GrowableArray<VMReg>& _input_registers;
+  const GrowableArray<VMReg>& _output_registers;
+public:
+  NativeInvokerGenerator(CodeBuffer* buffer,
+                         address call_target,
+                         int shadow_space_bytes,
+                         const GrowableArray<VMReg>& input_registers,
+                         const GrowableArray<VMReg>& output_registers)
+   : StubCodeGenerator(buffer, PrintMethodHandleStubs),
+     _call_target(call_target),
+     _shadow_space_bytes(shadow_space_bytes),
+     _input_registers(input_registers),
+     _output_registers(output_registers) {}
+  void generate();
+
+  void spill_register(VMReg reg) {
+    assert(reg->is_reg(), "must be a register");
+    MacroAssembler* masm = _masm;
+    if (reg->is_Register()) {
+      __ push(reg->as_Register());
+    } else if (reg->is_XMMRegister()) {
+      if (UseAVX >= 3) {
+        __ subptr(rsp, 64); // bytes
+        __ evmovdqul(Address(rsp, 0), reg->as_XMMRegister(), Assembler::AVX_512bit);
+      } else if (UseAVX >= 1) {
+        __ subptr(rsp, 32);
+        __ vmovdqu(Address(rsp, 0), reg->as_XMMRegister());
+      } else {
+        __ subptr(rsp, 16);
+        __ movdqu(Address(rsp, 0), reg->as_XMMRegister());
+      }
+    } else {
+      ShouldNotReachHere();
+    }
+  }
+
+  void fill_register(VMReg reg) {
+    assert(reg->is_reg(), "must be a register");
+    MacroAssembler* masm = _masm;
+    if (reg->is_Register()) {
+      __ pop(reg->as_Register());
+    } else if (reg->is_XMMRegister()) {
+      if (UseAVX >= 3) {
+        __ evmovdqul(reg->as_XMMRegister(), Address(rsp, 0), Assembler::AVX_512bit);
+        __ addptr(rsp, 64); // bytes
+      } else if (UseAVX >= 1) {
+        __ vmovdqu(reg->as_XMMRegister(), Address(rsp, 0));
+        __ addptr(rsp, 32);
+      } else {
+        __ movdqu(reg->as_XMMRegister(), Address(rsp, 0));
+        __ addptr(rsp, 16);
+      }
+    } else {
+      ShouldNotReachHere();
+    }
+  }
+
+private:
+#ifdef ASSERT
+bool target_uses_register(VMReg reg) {
+  return _input_registers.contains(reg) || _output_registers.contains(reg);
+}
+#endif
+};
+
+address SharedRuntime::make_native_invoker(address call_target,
+                                           int shadow_space_bytes,
+                                           const GrowableArray<VMReg>& input_registers,
+                                           const GrowableArray<VMReg>& output_registers) {
+  BufferBlob* _invoke_native_blob = BufferBlob::create("nep_invoker_blob", native_invoker_code_size);
+  if (_invoke_native_blob == NULL)
+    return NULL; // allocation failure
+
+  CodeBuffer code(_invoke_native_blob);
+  NativeInvokerGenerator g(&code, call_target, shadow_space_bytes, input_registers, output_registers);
+  g.generate();
+  code.log_section_sizes("nep_invoker_blob");
+
+  return _invoke_native_blob->code_begin();
+}
+
+void NativeInvokerGenerator::generate() {
+  assert(!(target_uses_register(r15_thread->as_VMReg()) || target_uses_register(rscratch1->as_VMReg())), "Register conflict");
+
+  MacroAssembler* masm = _masm;
+  __ enter();
+
+  Address java_pc(r15_thread,
+                  JavaThread::frame_anchor_offset() + JavaFrameAnchor::last_Java_pc_offset());
+  __ movptr(rscratch1, Address(rsp, 8)); // read return address from stack
+  __ movptr(java_pc, rscratch1);
+
+  __ movptr(rscratch1, rsp);
+  __ addptr(rscratch1, 16);
+  __ movptr(Address(r15_thread, JavaThread::last_Java_sp_offset()), rscratch1);
+
+    // State transition
+  __ movl(Address(r15_thread, JavaThread::thread_state_offset()), _thread_in_native);
+
+  if (_shadow_space_bytes != 0) {
+    // needed here for correct stack args offset on Windows
+    __ subptr(rsp, _shadow_space_bytes);
+  }
+
+  __ call(RuntimeAddress(_call_target));
+
+  if (_shadow_space_bytes != 0) {
+    // needed here for correct stack args offset on Windows
+    __ addptr(rsp, _shadow_space_bytes);
+  }
+
+  assert(_output_registers.length() <= 1
+    || (_output_registers.length() == 2 && !_output_registers.at(1)->is_valid()), "no multi-reg returns");
+  bool need_spills = _output_registers.length() != 0;
+  VMReg ret_reg = need_spills ? _output_registers.at(0) : VMRegImpl::Bad();
+
+  __ restore_cpu_control_state_after_jni();
+
+  __ movl(Address(r15_thread, JavaThread::thread_state_offset()), _thread_in_native_trans);
+
+  if (os::is_MP()) {
+    // Force this write out before the read below
+    __ membar(Assembler::Membar_mask_bits(
+            Assembler::LoadLoad | Assembler::LoadStore |
+            Assembler::StoreLoad | Assembler::StoreStore));
+  }
+
+  Label L_after_safepoint_poll;
+  Label L_safepoint_poll_slow_path;
+
+  __ safepoint_poll(L_safepoint_poll_slow_path, r15_thread, rscratch1);
+  __ cmpl(Address(r15_thread, JavaThread::suspend_flags_offset()), 0);
+  __ jcc(Assembler::notEqual, L_safepoint_poll_slow_path);
+  // change thread state
+  __ movl(Address(r15_thread, JavaThread::thread_state_offset()), _thread_in_Java);
+
+  __ bind(L_after_safepoint_poll);
+
+  __ block_comment("reguard stack check");
+  Label L_reguard;
+  Label L_after_reguard;
+  __ cmpl(Address(r15_thread, JavaThread::stack_guard_state_offset()), JavaThread::stack_guard_yellow_reserved_disabled);
+  __ jcc(Assembler::equal, L_reguard);
+  __ bind(L_after_reguard);
+
+  __ reset_last_Java_frame(r15_thread, true);
+
+  __ leave(); // required for proper stackwalking of RuntimeStub frame
+  __ ret(0);
+
+  //////////////////////////////////////////////////////////////////////////////
+
+  __ block_comment("{ L_safepoint_poll_slow_path");
+  __ bind(L_safepoint_poll_slow_path);
+  __ vzeroupper();
+
+  if (need_spills) {
+    spill_register(ret_reg);
+  }
+
+  __ mov(c_rarg0, r15_thread);
+  __ mov(r12, rsp); // remember sp
+  __ subptr(rsp, frame::arg_reg_save_area_bytes); // windows
+  __ andptr(rsp, -16); // align stack as required by ABI
+  __ call(RuntimeAddress(CAST_FROM_FN_PTR(address, JavaThread::check_special_condition_for_native_trans)));
+  __ mov(rsp, r12); // restore sp
+  __ reinit_heapbase();
+
+  if (need_spills) {
+    fill_register(ret_reg);
+  }
+
+  __ jmp(L_after_safepoint_poll);
+  __ block_comment("} L_safepoint_poll_slow_path");
+
+  //////////////////////////////////////////////////////////////////////////////
+
+  __ block_comment("{ L_reguard");
+  __ bind(L_reguard);
+  __ vzeroupper();
+
+  if (need_spills) {
+    spill_register(ret_reg);
+  }
+
+  __ mov(r12, rsp); // remember sp
+  __ subptr(rsp, frame::arg_reg_save_area_bytes); // windows
+  __ andptr(rsp, -16); // align stack as required by ABI
+  __ call(RuntimeAddress(CAST_FROM_FN_PTR(address, SharedRuntime::reguard_yellow_pages)));
+  __ mov(rsp, r12); // restore sp
+  __ reinit_heapbase();
+
+  if (need_spills) {
+    fill_register(ret_reg);
+  }
+
+  __ jmp(L_after_reguard);
+
+  __ block_comment("} L_reguard");
+
+  //////////////////////////////////////////////////////////////////////////////
+
+  __ flush();
+}
 
 //------------------------------Montgomery multiplication------------------------
 //
 
 #ifndef _WINDOWS
 
-#define ASM_SUBTRACT
-
-#ifdef ASM_SUBTRACT
 // Subtract 0:b from carry:a.  Return carry.
-static unsigned long
-sub(unsigned long a[], unsigned long b[], unsigned long carry, long len) {
-  long i = 0, cnt = len;
-  unsigned long tmp;
+static julong
+sub(julong a[], julong b[], julong carry, long len) {
+  long long i = 0, cnt = len;
+  julong tmp;
   asm volatile("clc; "
                "0: ; "
                "mov (%[b], %[i], 8), %[tmp]; "
@@ -3699,24 +3906,6 @@ sub(unsigned long a[], unsigned long b[], unsigned long carry, long len) {
                : "memory");
   return tmp;
 }
-#else // ASM_SUBTRACT
-typedef int __attribute__((mode(TI))) int128;
-
-// Subtract 0:b from carry:a.  Return carry.
-static unsigned long
-sub(unsigned long a[], unsigned long b[], unsigned long carry, int len) {
-  int128 tmp = 0;
-  int i;
-  for (i = 0; i < len; i++) {
-    tmp += a[i];
-    tmp -= b[i];
-    a[i] = tmp;
-    tmp >>= 64;
-    assert(-1 <= tmp && tmp <= 0, "invariant");
-  }
-  return tmp + carry;
-}
-#endif // ! ASM_SUBTRACT
 
 // Multiply (unsigned) Long A by Long B, accumulating the double-
 // length result into the accumulator formed of T0, T1, and T2.
@@ -3739,17 +3928,59 @@ do {                                                            \
            : "r"(A), "a"(B) : "cc");                            \
  } while(0)
 
+#else //_WINDOWS
+
+static julong
+sub(julong a[], julong b[], julong carry, long len) {
+  long i;
+  julong tmp;
+  unsigned char c = 1;
+  for (i = 0; i < len; i++) {
+    c = _addcarry_u64(c, a[i], ~b[i], &tmp);
+    a[i] = tmp;
+  }
+  c = _addcarry_u64(c, carry, ~0, &tmp);
+  return tmp;
+}
+
+// Multiply (unsigned) Long A by Long B, accumulating the double-
+// length result into the accumulator formed of T0, T1, and T2.
+#define MACC(A, B, T0, T1, T2)                          \
+do {                                                    \
+  julong hi, lo;                            \
+  lo = _umul128(A, B, &hi);                             \
+  unsigned char c = _addcarry_u64(0, lo, T0, &T0);      \
+  c = _addcarry_u64(c, hi, T1, &T1);                    \
+  _addcarry_u64(c, T2, 0, &T2);                         \
+ } while(0)
+
+// As above, but add twice the double-length result into the
+// accumulator.
+#define MACC2(A, B, T0, T1, T2)                         \
+do {                                                    \
+  julong hi, lo;                            \
+  lo = _umul128(A, B, &hi);                             \
+  unsigned char c = _addcarry_u64(0, lo, T0, &T0);      \
+  c = _addcarry_u64(c, hi, T1, &T1);                    \
+  _addcarry_u64(c, T2, 0, &T2);                         \
+  c = _addcarry_u64(0, lo, T0, &T0);                    \
+  c = _addcarry_u64(c, hi, T1, &T1);                    \
+  _addcarry_u64(c, T2, 0, &T2);                         \
+ } while(0)
+
+#endif //_WINDOWS
+
 // Fast Montgomery multiplication.  The derivation of the algorithm is
 // in  A Cryptographic Library for the Motorola DSP56000,
 // Dusse and Kaliski, Proc. EUROCRYPT 90, pp. 230-237.
 
-static void __attribute__((noinline))
-montgomery_multiply(unsigned long a[], unsigned long b[], unsigned long n[],
-                    unsigned long m[], unsigned long inv, int len) {
-  unsigned long t0 = 0, t1 = 0, t2 = 0; // Triple-precision accumulator
+static void NOINLINE
+montgomery_multiply(julong a[], julong b[], julong n[],
+                    julong m[], julong inv, int len) {
+  julong t0 = 0, t1 = 0, t2 = 0; // Triple-precision accumulator
   int i;
 
-  assert(inv * n[0] == -1UL, "broken inverse in Montgomery multiply");
+  assert(inv * n[0] == ULLONG_MAX, "broken inverse in Montgomery multiply");
 
   for (i = 0; i < len; i++) {
     int j;
@@ -3785,13 +4016,13 @@ montgomery_multiply(unsigned long a[], unsigned long b[], unsigned long n[],
 // multiplication.  However, its loop control is more complex and it
 // may actually run slower on some machines.
 
-static void __attribute__((noinline))
-montgomery_square(unsigned long a[], unsigned long n[],
-                  unsigned long m[], unsigned long inv, int len) {
-  unsigned long t0 = 0, t1 = 0, t2 = 0; // Triple-precision accumulator
+static void NOINLINE
+montgomery_square(julong a[], julong n[],
+                  julong m[], julong inv, int len) {
+  julong t0 = 0, t1 = 0, t2 = 0; // Triple-precision accumulator
   int i;
 
-  assert(inv * n[0] == -1UL, "broken inverse in Montgomery multiply");
+  assert(inv * n[0] == ULLONG_MAX, "broken inverse in Montgomery square");
 
   for (i = 0; i < len; i++) {
     int j;
@@ -3837,13 +4068,13 @@ montgomery_square(unsigned long a[], unsigned long n[],
 }
 
 // Swap words in a longword.
-static unsigned long swap(unsigned long x) {
+static julong swap(julong x) {
   return (x << 32) | (x >> 32);
 }
 
 // Copy len longwords from s to d, word-swapping as we go.  The
 // destination array is reversed.
-static void reverse_words(unsigned long *s, unsigned long *d, int len) {
+static void reverse_words(julong *s, julong *d, int len) {
   d += len;
   while(len-- > 0) {
     d--;
@@ -3865,24 +4096,24 @@ void SharedRuntime::montgomery_multiply(jint *a_ints, jint *b_ints, jint *n_ints
   // Make very sure we don't use so much space that the stack might
   // overflow.  512 jints corresponds to an 16384-bit integer and
   // will use here a total of 8k bytes of stack space.
-  int total_allocation = longwords * sizeof (unsigned long) * 4;
+  int total_allocation = longwords * sizeof (julong) * 4;
   guarantee(total_allocation <= 8192, "must be");
-  unsigned long *scratch = (unsigned long *)alloca(total_allocation);
+  julong *scratch = (julong *)alloca(total_allocation);
 
   // Local scratch arrays
-  unsigned long
+  julong
     *a = scratch + 0 * longwords,
     *b = scratch + 1 * longwords,
     *n = scratch + 2 * longwords,
     *m = scratch + 3 * longwords;
 
-  reverse_words((unsigned long *)a_ints, a, longwords);
-  reverse_words((unsigned long *)b_ints, b, longwords);
-  reverse_words((unsigned long *)n_ints, n, longwords);
+  reverse_words((julong *)a_ints, a, longwords);
+  reverse_words((julong *)b_ints, b, longwords);
+  reverse_words((julong *)n_ints, n, longwords);
 
-  ::montgomery_multiply(a, b, n, m, (unsigned long)inv, longwords);
+  ::montgomery_multiply(a, b, n, m, (julong)inv, longwords);
 
-  reverse_words(m, (unsigned long *)m_ints, longwords);
+  reverse_words(m, (julong *)m_ints, longwords);
 }
 
 void SharedRuntime::montgomery_square(jint *a_ints, jint *n_ints,
@@ -3894,29 +4125,27 @@ void SharedRuntime::montgomery_square(jint *a_ints, jint *n_ints,
   // Make very sure we don't use so much space that the stack might
   // overflow.  512 jints corresponds to an 16384-bit integer and
   // will use here a total of 6k bytes of stack space.
-  int total_allocation = longwords * sizeof (unsigned long) * 3;
+  int total_allocation = longwords * sizeof (julong) * 3;
   guarantee(total_allocation <= 8192, "must be");
-  unsigned long *scratch = (unsigned long *)alloca(total_allocation);
+  julong *scratch = (julong *)alloca(total_allocation);
 
   // Local scratch arrays
-  unsigned long
+  julong
     *a = scratch + 0 * longwords,
     *n = scratch + 1 * longwords,
     *m = scratch + 2 * longwords;
 
-  reverse_words((unsigned long *)a_ints, a, longwords);
-  reverse_words((unsigned long *)n_ints, n, longwords);
+  reverse_words((julong *)a_ints, a, longwords);
+  reverse_words((julong *)n_ints, n, longwords);
 
   if (len >= MONTGOMERY_SQUARING_THRESHOLD) {
-    ::montgomery_square(a, n, m, (unsigned long)inv, longwords);
+    ::montgomery_square(a, n, m, (julong)inv, longwords);
   } else {
-    ::montgomery_multiply(a, a, n, m, (unsigned long)inv, longwords);
+    ::montgomery_multiply(a, a, n, m, (julong)inv, longwords);
   }
 
-  reverse_words(m, (unsigned long *)m_ints, longwords);
+  reverse_words(m, (julong *)m_ints, longwords);
 }
-
-#endif // WINDOWS
 
 #ifdef COMPILER2
 // This is here instead of runtime_x86_64.cpp because it uses SimpleRuntimeFrame

@@ -26,28 +26,38 @@ import jdk.incubator.foreign.FunctionDescriptor;
 
 import java.lang.invoke.MethodType;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 public class CallingSequence {
     private final MethodType mt;
     private final FunctionDescriptor desc;
+    private final boolean isTrivial;
 
     private final List<Binding> returnBindings;
     private final List<List<Binding>> argumentBindings;
 
     public CallingSequence(MethodType mt, FunctionDescriptor desc,
-                           List<List<Binding>> argumentBindings, List<Binding> returnBindings) {
+                           boolean isTrivial, List<List<Binding>> argumentBindings, List<Binding> returnBindings) {
         this.mt = mt;
         this.desc = desc;
+        this.isTrivial = isTrivial;
         this.returnBindings = returnBindings;
         this.argumentBindings = argumentBindings;
     }
 
-    public Stream<Binding.Move> moveBindings() {
+    public Stream<Binding.Move> argMoveBindings() {
         return argumentBindings.stream()
                 .flatMap(List::stream)
                 .filter(Binding.Move.class::isInstance)
                 .map(Binding.Move.class::cast);
+    }
+
+    public Stream<Binding.Move> retMoveBindings() {
+        return returnBindings()
+            .stream()
+            .filter(Binding.Move.class::isInstance)
+            .map(Binding.Move.class::cast);
     }
 
     public int argumentCount() {
@@ -56,6 +66,10 @@ public class CallingSequence {
 
     public List<Binding> argumentBindings(int i) {
         return argumentBindings.get(i);
+    }
+
+    public Stream<Binding> argumentBindings() {
+        return argumentBindings.stream().flatMap(List::stream);
     }
 
     public List<Binding> returnBindings() {
@@ -86,5 +100,9 @@ public class CallingSequence {
 
     public FunctionDescriptor functionDesc() {
         return desc;
+    }
+
+    public boolean isTrivial() {
+        return isTrivial;
     }
 }
